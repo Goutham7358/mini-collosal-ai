@@ -1,0 +1,401 @@
+MiniColossal — Design Document
+=================================
+A simplified Colossal-AI replica built from scratch using torch.distributed primitives.
+
+================================================================================
+IMPLEMENTATION ORDER (sequential)
+================================================================================
+
+Step 1: Foundation
+  - Library structure (minicolossal/ package)
+  - GPT-2 model (reusable, clean sequential blocks)
+  - WikiText-2 data loader + tokenizer
+  - Shared utilities (timing, memory tracking, metrics collection)
+  - Single-GPU baseline benchmark
+
+Step 2: Data Parallelism
+  - Ring all-reduce implementation
+  - Gradient bucketing wrapper
+  - DataParallelEngine class
+  - Benchmark: 1 GPU vs 2 vs 4, compare with PyTorch DDP
+
+Step 3: ZeRO Optimizer Sharding
+  - ZeROStage1Optimizer (shard optimizer states, all-gather params after step)
+  - ZeROStage2Optimizer (shard optimizer states + gradients via reduce-scatter)
+  - Benchmark: memory savings, throughput vs standard training
+
+Step 4: 1D Tensor Parallelism
+  - ColumnParallelLinear, RowParallelLinear
+  - ParallelSelfAttention, ParallelMLP
+  - TensorParallelGPT2 model variant
+  - Benchmark: 1 GPU vs 2-way TP vs 4-way TP
+
+Step 5: Pipeline Parallelism (1F1B)
+  - PipelineStage (holds a subset of layers)
+  - P2P communication (send/recv activations and gradients)
+  - NaivePipelineSchedule (sequential, 1 GPU active)
+  - OneFOneBSchedule (interleaved forward/backward)
+  - Benchmark: naive vs 1F1B, bubble ratio, memory per stage
+
+Step 6: Hybrid Parallelism
+  - Process group management (sub-groups for DP, PP, TP)
+  - Combine: 2-way DP x 2-way PP
+  - Combine: 2-way DP x 2-way TP
+  - Combine: 4-way PP + ZeRO Stage 1
+  - Benchmark: compare hybrid configs
+
+
+================================================================================
+LIBRARY STRUCTURE
+================================================================================
+
+minicolossal/
+├── __init__.py              # Package init, version
+├── gpt2.py                  # GPT-2 model (shared across all components)
+├── data.py                  # WikiText-2 data loading + tokenization
+├── utils.py                 # Metrics, timing, memory helpers
+├── data_parallel.py         # Ring all-reduce + gradient bucketing
+├── zero_optim.py            # ZeRO Stage 1 & Stage 2 optimizer
+├── tensor_parallel.py       # Column/Row parallel linear, parallel attn/MLP
+├── pipeline_parallel.py     # Stage manager, P2P, naive + 1F1B schedules
+└── hybrid.py                # Process group setup + hybrid configs
+
+benchmarks/
+├── bench_single_gpu.py      # Single GPU baseline
+├── bench_data_parallel.py   # Data parallelism benchmarks
+├── bench_zero.py            # ZeRO benchmarks
+├── bench_tensor_parallel.py # Tensor parallelism benchmarks
+├── bench_pipeline.py        # Pipeline parallelism benchmarks
+├── bench_hybrid.py          # Hybrid parallelism benchmarks
+└── launch.sh                # Launcher for multi-node runs
+
+
+================================================================================
+HIGH-LEVEL DESIGN PER COMPONENT
+================================================================================
+
+--- FOUNDATION: GPT-2 Model ---
+GPT2Config: vocab_size=50257, n_layers=24, hidden=1024, heads=16, seq_len=256
+Layers: tok_emb → pos_emb → [TransformerBlock x N] → LayerNorm → lm_head
+Each TransformerBlock: LayerNorm → MultiHeadAttn → residual → LayerNorm → MLP → residual
+The model is a clean nn.Sequential-like structure so it can be easily split
+for pipeline parallelism.
+
+--- FOUNDATION: Data Loading ---
+WikiText-2 via HuggingFace datasets library.
+Simple GPT-2 byte-pair tokenizer via tiktoken (or simple word-level tokenizer).
+Returns (input_ids, target_ids) where target = input shifted by 1.
+
+--- COMPONENT 1: Data Parallelism ---
+
+  Class: RingAllReduce
+    - Takes list of tensors (gradients)
+    - Performs ring all-reduce in 2 phases:
+      Phase 1 (reduce-scatter): N-1 steps, each GPU sends a chunk to next neighbor
+      Phase 2 (all-gather): N-1 steps, each GPU sends reduced chunk to next neighbor
+    - Result: every GPU has the sum of all gradients
+
+  Class: GradientBucketer
+    - Groups small gradient tensors into fixed-size buckets (e.g., 25MB)
+    - When a bucket is full, triggers ring all-reduce on that bucket
+    - This overlaps communication with backward pass computation
+
+  Class: DataParallelEngine
+    - Wraps a model
+    - After loss.backward(), calls GradientBucketer to sync gradients
+    - Divides gradients by world_size (average, not sum)
+    - Uses DistributedSampler to split data across GPUs
+
+  Data flow per step:
+    1. Each GPU gets different data batch (via DistributedSampler)
+    2. Forward pass (independent on each GPU)
+    3. Backward pass (independent, but gradient bucketing fires all-reduces)
+    4. After backward: all gradients are averaged across GPUs
+    5. Optimizer step (same on every GPU → models stay in sync)
+
+--- COMPONENT 2: ZeRO Optimizer Sharding ---
+
+  Class: ZeROStage1Optimizer
+    - Partitions parameters into N groups (one per GPU)
+    - Each GPU creates optimizer states ONLY for its partition
+    - Forward/backward: normal (full model, full gradients on each GPU)
+    - After backward:
+      1. all-reduce gradients (so every GPU has avg gradients)
+      2. Each GPU runs optimizer.step() only on its partition
+      3. all-gather updated parameters (broadcast to all GPUs)
+    - Memory saving: optimizer states go from 8*P to 8*P/N per GPU
+
+  Class: ZeROStage2Optimizer
+    - Same partitioning as Stage 1
+    - After backward:
+      1. reduce-scatter gradients (each GPU gets only gradients for its partition)
+      2. Each GPU runs optimizer.step() only on its partition
+      3. all-gather updated parameters
+    - Memory saving: optimizer states 8*P/N + gradients 4*P/N per GPU
+
+--- COMPONENT 3: 1D Tensor Parallelism ---
+
+  Class: ColumnParallelLinear(in_features, out_features)
+    - Weight shape: [in_features, out_features/N] on each GPU
+    - Forward: Y_local = X @ W_local  (no communication)
+    - Backward: all-reduce dX across GPUs
+    - Used for: Q, K, V projections in attention, first linear in MLP
+
+  Class: RowParallelLinear(in_features, out_features)
+    - Weight shape: [in_features/N, out_features] on each GPU
+    - Forward: Y_local = X_local @ W_local, then all-reduce Y across GPUs
+    - Backward: no communication needed for dX (it's already split)
+    - Used for: output projection in attention, second linear in MLP
+
+  Parallel Attention:
+    - Q, K, V = ColumnParallelLinear (split heads across GPUs)
+    - Each GPU computes attention on its subset of heads
+    - Output projection = RowParallelLinear (all-reduce combines results)
+    - Net: 1 all-reduce per attention block
+
+  Parallel MLP:
+    - Linear1 = ColumnParallelLinear (split ff_dim across GPUs)
+    - GELU activation (local)
+    - Linear2 = RowParallelLinear (all-reduce combines)
+    - Net: 1 all-reduce per MLP block
+
+--- COMPONENT 4: Pipeline Parallelism (1F1B) ---
+
+  Class: PipelineStage
+    - Holds a subset of transformer blocks (e.g., layers 0-5 on GPU 0)
+    - Manages activation storage for backward pass
+
+  Class: P2PComm
+    - send_forward(tensor, dst_rank): sends activations to next stage
+    - recv_forward(src_rank): receives activations from prev stage
+    - send_backward(tensor, dst_rank): sends gradients to prev stage
+    - recv_backward(src_rank): receives gradients from next stage
+
+  Class: NaivePipelineSchedule
+    - Sequential execution: all microbatches forward on stage 0, then stage 1, etc.
+    - Then backward in reverse. Only 1 GPU active at a time.
+    - Bubble ratio ≈ (S-1)/S = 75% with 4 stages
+
+  Class: OneFOneBSchedule
+    - Warmup: inject microbatches one at a time (forward only)
+    - Steady state: alternate 1 forward + 1 backward on each stage
+    - Cooldown: drain remaining backwards
+    - Bubble ratio ≈ (S-1)/(S-1+M) where M = num microbatches
+    - With S=4, M=8: bubble ≈ 27% (vs 75% naive)
+
+--- HYBRID PARALLELISM ---
+
+  Design principle: COMPOSABLE REUSE (following Colossal-AI's pattern)
+    - Each standalone component exposes a clean interface with optional
+      parameters for process groups and rank mapping.
+    - The hybrid layer creates sub-process-groups and COMPOSES the
+      standalone components — no code duplication.
+
+  How reuse works:
+    - data_parallel.allreduce_bucketed_grads(model, world_size, group=None)
+      → Same function used standalone AND in hybrid. The `group` parameter
+        scopes it to a DP sub-group when used in hybrid mode.
+    - pipeline_parallel.one_f_one_b_forward_backward(..., prev_rank=None, next_rank=None)
+      → Same 1F1B schedule used standalone AND in hybrid. The prev_rank/
+        next_rank params map pipeline-local ranks to global ranks.
+    - tensor_parallel.TensorParallelGPT2(cfg, tp_size, tp_rank, tp_group=None)
+      → Same model class used standalone AND in hybrid.
+
+  Process Group Management (hybrid_parallel.py):
+    - create_dp_tp_groups(world_size, tp_size)
+        TP groups: [0,1], [2,3]    (model split within each group)
+        DP groups: [0,2], [1,3]    (gradient sync across groups)
+    - create_dp_pp_groups(world_size, pp_size)
+        PP groups: [0,1], [2,3]    (pipeline stages)
+        DP groups: [0,2], [1,3]    (gradient sync across same-stage)
+    - dp_allreduce_grads(model, dp_group, dp_size)
+        Thin wrapper → calls allreduce_bucketed_grads(group=dp_group)
+
+  Configs benchmarked (pairwise):
+    a) 4-way DP (baseline, all data parallel)
+    b) 2-way DP x 2-way PP
+    c) 2-way DP x 2-way TP
+    d) 2-way PP + ZeRO-1 within 2-way DP
+
+  UNIFIED 3D PLUGIN (plugin.py) — Colossal-AI style:
+    Instead of separate pairwise scripts, a single MiniColossalPlugin
+    handles ANY combination by specifying (tp_size, pp_size, zero_stage).
+    dp_size is auto-calculated: dp_size = world_size / (tp_size * pp_size).
+
+    ProcessGroupMesh(*shape):
+      - Creates an N-dimensional grid of ranks (e.g., (2, 2, 1) for DP2 x PP2)
+      - get_group_along_axis(axis) extracts process groups for each dimension
+      - Axes: 0=DP, 1=PP, 2=TP
+
+    MiniColossalPlugin(tp_size, pp_size, zero_stage):
+      - configure(cfg, lr, device) → builds model + optimizer
+        * PP > 1 → create_pipeline_stage()
+        * TP > 1 → TensorParallelGPT2(tp_group=...)
+        * else   → full GPT2Model
+        * ZeRO-1 → ZeROStage1Optimizer(group=dp_group)
+        * ZeRO-0 → standard AdamW
+      - train_step(model, optimizer, batch, criterion, cfg) → loss
+        * PP path: one_f_one_b_forward_backward(prev_rank=..., next_rank=...)
+        * Non-PP path: forward + backward
+        * DP sync: allreduce_bucketed_grads(group=dp_group)
+        * Optimizer step
+
+    Supported configs (any combo where tp*pp divides world_size):
+      --tp 1 --pp 1 --zero 0  →  Pure DP
+      --tp 1 --pp 1 --zero 1  →  DP + ZeRO-1
+      --tp 4 --pp 1 --zero 0  →  Pure TP
+      --tp 1 --pp 4 --zero 0  →  Pure PP
+      --tp 2 --pp 1 --zero 0  →  DP(2) x TP(2)
+      --tp 1 --pp 2 --zero 0  →  DP(2) x PP(2)
+      --tp 1 --pp 2 --zero 1  →  DP(2) x PP(2) + ZeRO-1
+
+    Constraint (from Colossal-AI): zero_stage <= 1 when pp_size > 1
+
+
+================================================================================
+RESULTS — 4-node benchmarks (4x g4dn.xlarge, Tesla T4 16GB, NCCL over TCP)
+================================================================================
+
+Baseline: Single GPU (GPT-2 Medium, WikiText-2, batch=4, seq_len=256)
+  Throughput:     1,361 tokens/s
+  Peak memory:    7.67 GB
+  30 steps in 22.6s
+
+--- Component 1: Data Parallelism (allreduce_bucketed, 4 GPUs) ---
+  Aggregate throughput:  1,322 tokens/s (330 tok/s per GPU)
+  Peak memory per GPU:   7.67 GB
+  Scaling efficiency:    24.3%
+  Notes: Each GPU holds full model. Gradient sync via dist.all_reduce on
+         25MB buckets. Low scaling due to network bandwidth on g4dn (no EFA).
+         Ring send/recv variant verified on 2 nodes (850 tok/s aggregate).
+
+--- Component 2a: ZeRO Stage 1 (4 GPUs) ---
+  Aggregate throughput:  926 tokens/s (232 tok/s per GPU)
+  Peak memory per GPU:   9.47 GB
+  Optimizer memory:      0.71 GB (vs 2.83 GB standard = 4x saving)
+  Notes: Partitions optimizer states across 4 GPUs. Each GPU still holds
+         full model + full gradients. Extra communication from all-gather
+         of updated parameters adds overhead vs pure DP.
+
+--- Component 2b: ZeRO Stage 2 (4 GPUs) ---
+  Aggregate throughput:  873 tokens/s (218 tok/s per GPU)
+  Peak memory per GPU:   6.96 GB (9.3% less than baseline 7.67 GB)
+  Grad+Optim memory:     1.06 GB (vs 4.25 GB standard = 4x saving)
+  Notes: Partitions both optimizer states AND gradients. reduce-scatter
+         replaces all-reduce for gradients. Broadcast updated params
+         per-partition to avoid OOM from all-gather of full model.
+
+--- Component 3: 1D Tensor Parallelism (4-way) ---
+  Throughput:            915 tokens/s (single data stream, not aggregated)
+  Peak memory per GPU:   3.39 GB (56% reduction from 7.67 GB)
+  Params per GPU:        127.4M (vs 354M full model)
+  All-reduces per fwd:   48 (2 per block x 24 blocks)
+  Notes: Megatron-LM style column/row parallel linear. Splits attention
+         heads and MLP hidden dim across GPUs. Heavy communication (48
+         all-reduces per forward) limits throughput vs single GPU.
+
+--- Component 4: Pipeline Parallelism — 1F1B (4 stages) ---
+  Throughput:            3,040 tokens/s
+  Peak memory (stage 0): 2.77 GB (64% reduction from 7.67 GB)
+  Peak memory (stage 1): 1.75 GB
+  Peak memory (stage 2): 1.59 GB
+  Peak memory (stage 3): 2.56 GB
+  Theoretical bubble:    27.3% (with 8 microbatches)
+  Params per stage:      75.6M (middle) to 127.3M (first/last with embeddings)
+  Notes: Model split into 4 stages of 6 blocks each. Point-to-point
+         send/recv for activation/gradient communication. 1F1B schedule
+         reduces bubble from 75% (naive) to 27.3%. Best throughput of
+         all methods due to minimal communication (only between adjacent stages).
+
+--- Hybrid: DP(2) x TP(2) — 4 GPUs ---
+  Aggregate throughput:  2,327 tokens/s (582 tok/s per GPU)
+  Peak memory per GPU:   4.80 GB
+  Layout: TP groups [0,1] and [2,3], DP groups [0,2] and [1,3]
+  Notes: 2 TP groups each with 2-way tensor parallelism. DP gradient sync
+         across TP groups. Combines memory savings of TP with data-parallel
+         scaling. Good balance of memory and throughput.
+
+--- Hybrid: DP(2) x PP(2) — 4 GPUs ---
+  Aggregate throughput:  2,281 tokens/s (1,141 tok/s per pipeline)
+  Peak memory per GPU:   4.08 GB
+  Theoretical bubble:    11.1% (with 8 microbatches, 2 stages)
+  Layout: Pipelines [0,1] and [2,3], DP groups [0,2] and [1,3]
+  Notes: 2 pipelines of 2 stages each. DP gradient sync between same-stage
+         ranks across pipelines. Lower bubble ratio than 4-stage PP (11%
+         vs 27%) because fewer stages. Good throughput and memory balance.
+
+--- Hybrid: PP(2) + ZeRO-1 within DP(2) — 4 GPUs ---
+  Aggregate throughput:  1,742 tokens/s (871 tok/s per pipeline)
+  Peak memory per GPU:   5.74 GB (stage 0), 6.31 GB (stage 1)
+  Theoretical bubble:    11.1% (with 8 microbatches, 2 stages)
+  ZeRO-1 saving:         2x optimizer memory (0.81 GB vs 1.62 GB)
+  Layout: Pipelines [0,1] and [2,3], DP groups [0,2] and [1,3]
+  Notes: Same as DP x PP but replaces plain all-reduce gradient sync
+         with ZeRO-1 partitioned optimizer within each DP sub-group.
+         Following Colossal-AI's design: PP + ZeRO-1 only (ZeRO-2
+         forbidden with PP due to prohibitive gradient sync costs).
+         Lower throughput than DP x PP due to ZeRO all-gather overhead,
+         but halves optimizer memory per GPU.
+
+
+================================================================================
+SUMMARY TABLE
+================================================================================
+
+Configuration            | Throughput    | Peak Mem/GPU | Key Benefit
+-------------------------|---------------|--------------|---------------------------
+Single GPU (baseline)    | 1,361 tok/s   | 7.67 GB      | —
+DP (4-way)               | 1,322 tok/s*  | 7.67 GB      | Scale batch size
+ZeRO Stage 1 (4-way)    |   926 tok/s*  | 9.47 GB      | 4x optimizer mem saving
+ZeRO Stage 2 (4-way)    |   873 tok/s*  | 6.96 GB      | 4x grad+optim saving
+TP (4-way)               |   915 tok/s   | 3.39 GB      | 56% model mem reduction
+PP 1F1B (4 stages)       | 3,040 tok/s   | 2.77 GB      | 64% mem, best throughput
+DP(2) x TP(2)            | 2,327 tok/s*  | 4.80 GB      | Balanced hybrid
+DP(2) x PP(2)            | 2,281 tok/s*  | 4.08 GB      | Low bubble + DP scaling
+PP(2)+ZeRO-1 in DP(2)   | 1,742 tok/s*  | 5.74 GB      | PP + 2x optim saving
+
+* = aggregate throughput across all GPUs
+
+Key findings:
+  1. Pipeline parallelism achieves the best throughput (3,040 tok/s) because
+     communication is only between adjacent stages (not all-to-all).
+  2. Tensor parallelism gives the best per-GPU memory reduction for model
+     weights, but 48 all-reduces per forward pass limit throughput.
+  3. ZeRO Stage 2 reduces total memory but adds communication overhead
+     from reduce-scatter + broadcast operations.
+  4. Hybrid configurations (DP x TP, DP x PP, PP + ZeRO-1) provide good
+     tradeoffs between memory, throughput, and scalability.
+  5. PP + ZeRO-1 follows Colossal-AI's constraint: ZeRO-2 is forbidden
+     with PP due to prohibitive gradient synchronization costs.
+  6. Network bandwidth is the main bottleneck on g4dn.xlarge (no EFA/InfiniBand),
+     which explains low DP scaling efficiency (24.3%).
+
+
+================================================================================
+FILES AND STRUCTURE
+================================================================================
+
+minicolossal/
+  __init__.py              — Package init
+  gpt2.py                  — GPT-2 model (Medium 354M, configurable)
+  data.py                  — WikiText-2 data loading with tiktoken
+  utils.py                 — MetricsTracker, StepTimer, print utilities
+  data_parallel.py         — Ring all-reduce, bucketed all-reduce, DataParallelEngine
+  zero_optim.py            — ZeRO Stage 1 & Stage 2 optimizers
+  tensor_parallel.py       — Column/Row parallel linear, TensorParallelGPT2
+  pipeline_parallel.py     — PipelineStage, naive + 1F1B schedules
+  hybrid_parallel.py       — Process group creation, DP gradient sync for hybrids
+  plugin.py                — Unified 3D plugin: ProcessGroupMesh + MiniColossalPlugin
+
+benchmarks/
+  bench_single_gpu.py      — Single GPU baseline
+  bench_data_parallel.py   — Data parallelism (4 methods)
+  bench_zero.py            — ZeRO Stage 1 & 2
+  bench_tensor_parallel.py — 1D Tensor Parallelism
+  bench_pipeline.py        — Pipeline Parallelism (naive + 1F1B)
+  bench_unified.py         — Unified 3D benchmark (any hybrid config via CLI args)
+  launch_dp.sh             — Multi-node launcher for DP
+  launch_zero.sh           — Multi-node launcher for ZeRO
+  launch_tp.sh             — Multi-node launcher for TP
+  launch_pipeline.sh       — Multi-node launcher for PP
+  launch_unified.sh        — Multi-node launcher for unified benchmark
