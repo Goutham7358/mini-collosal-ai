@@ -39,7 +39,7 @@ import time
 
 def naive_all_reduce_grads(model, world_size, rank):
     """
-    Each worker sends its gradient to every other worker using dist.send/recv,
+    Each worker sends its gradient to every other worker using dist.isend/irecv,
     accumulates all of them, and divides by world_size to get the average.
 
     Communication pattern: all-to-all
@@ -47,6 +47,7 @@ def naive_all_reduce_grads(model, world_size, rank):
     This is O(P) in bandwidth — not scalable.
 
     Adapted from assignment's all_reduce() function, but operates on GPU tensors.
+    Uses non-blocking isend/irecv so matching pairs are posted concurrently.
     """
     for param in model.parameters():
         if param.grad is None:
@@ -58,14 +59,21 @@ def naive_all_reduce_grads(model, world_size, rank):
         # Each worker sends its gradient to all others and receives from all others
         for source_rank in range(world_size):
             if source_rank == rank:
-                # Our turn to send
+                # Our turn to broadcast — batch all sends in one NCCL group
+                ops = []
                 for dest_rank in range(world_size):
                     if dest_rank != rank:
-                        dist.send(tensor=local_grad, dst=dest_rank)
+                        ops.append(dist.P2POp(dist.isend, local_grad, dest_rank))
+                reqs = dist.batch_isend_irecv(ops)
+                for req in reqs:
+                    req.wait()
             else:
                 # Receive gradient from this source
                 recv_buffer = torch.zeros_like(param.grad.data)
-                dist.recv(tensor=recv_buffer, src=source_rank)
+                ops = [dist.P2POp(dist.irecv, recv_buffer, source_rank)]
+                reqs = dist.batch_isend_irecv(ops)
+                for req in reqs:
+                    req.wait()
                 accumulated_grad += recv_buffer
 
         # Average the accumulated gradients
@@ -117,14 +125,14 @@ def ring_all_reduce_grads(model, world_size, rank):
             send_buf = chunks[send_idx].clone()
             recv_buf = torch.zeros_like(chunks[recv_idx])
 
-            # Even ranks send first, odd receive first — avoids NCCL deadlock
-            # (same pattern as the assignment's ring_all_reduce)
-            if rank % 2 == 0:
-                dist.send(send_buf, dst=right)
-                dist.recv(recv_buf, src=left)
-            else:
-                dist.recv(recv_buf, src=left)
-                dist.send(send_buf, dst=right)
+            # Batch send+recv into one NCCL group so both are posted atomically
+            ops = [
+                dist.P2POp(dist.isend, send_buf, right),
+                dist.P2POp(dist.irecv, recv_buf, left),
+            ]
+            reqs = dist.batch_isend_irecv(ops)
+            for req in reqs:
+                req.wait()
 
             chunks[recv_idx] += recv_buf
 
@@ -138,12 +146,13 @@ def ring_all_reduce_grads(model, world_size, rank):
             send_buf = chunks[send_idx].clone()
             recv_buf = torch.zeros_like(chunks[recv_idx])
 
-            if rank % 2 == 0:
-                dist.send(send_buf, dst=right)
-                dist.recv(recv_buf, src=left)
-            else:
-                dist.recv(recv_buf, src=left)
-                dist.send(send_buf, dst=right)
+            ops = [
+                dist.P2POp(dist.isend, send_buf, right),
+                dist.P2POp(dist.irecv, recv_buf, left),
+            ]
+            reqs = dist.batch_isend_irecv(ops)
+            for req in reqs:
+                req.wait()
 
             chunks[recv_idx] = recv_buf
 
@@ -202,12 +211,14 @@ class GradientBucketer:
             send_buf = chunks[send_idx].clone()
             recv_buf = torch.zeros_like(chunks[recv_idx])
 
-            if self.rank % 2 == 0:
-                dist.send(send_buf, dst=self.right)
-                dist.recv(recv_buf, src=self.left)
-            else:
-                dist.recv(recv_buf, src=self.left)
-                dist.send(send_buf, dst=self.right)
+            # Batch send+recv into one NCCL group so both are posted atomically
+            ops = [
+                dist.P2POp(dist.isend, send_buf, self.right),
+                dist.P2POp(dist.irecv, recv_buf, self.left),
+            ]
+            reqs = dist.batch_isend_irecv(ops)
+            for req in reqs:
+                req.wait()
 
             chunks[recv_idx] += recv_buf
 
@@ -219,12 +230,13 @@ class GradientBucketer:
             send_buf = chunks[send_idx].clone()
             recv_buf = torch.zeros_like(chunks[recv_idx])
 
-            if self.rank % 2 == 0:
-                dist.send(send_buf, dst=self.right)
-                dist.recv(recv_buf, src=self.left)
-            else:
-                dist.recv(recv_buf, src=self.left)
-                dist.send(send_buf, dst=self.right)
+            ops = [
+                dist.P2POp(dist.isend, send_buf, self.right),
+                dist.P2POp(dist.irecv, recv_buf, self.left),
+            ]
+            reqs = dist.batch_isend_irecv(ops)
+            for req in reqs:
+                req.wait()
 
             chunks[recv_idx] = recv_buf
 

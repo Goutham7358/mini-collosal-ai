@@ -1,0 +1,31 @@
+Phase 3 — Groups 2 & 3: Communication-Aware Placement (8 GPUs, 2× g4dn.12xlarge)
+==================================================================================
+Model: GPT-2 Medium (24L, 354M params)
+Hardware: 2× g4dn.12xlarge (4× T4 each), PCIe intra-node (~15 GB/s), TCP inter-node (~0.6 GB/s)
+
+Experiment     | Config                   | Placement            | Aggregate Tput | Peak Mem
+---------------|--------------------------|----------------------|----------------|----------
+2a. Good       | dp=2, pp=2, tp=2         | TP intra, DP inter   | 2,904 tok/s    | 4.08 GB
+2b. Good+ZeRO  | dp=2, pp=2, tp=2, Z1     | TP intra, DP inter   | 2,567 tok/s    | 5.74 GB
+3a. Bad        | dp=2, pp=2, tp=2         | TP inter, DP intra   | 3,520 tok/s    | 4.08 GB
+
+SURPRISING FINDING:
+"Bad" placement (TP on TCP, DP on PCIe) is 21% FASTER than "good" placement (TP on PCIe, DP on TCP).
+
+Why: For GPT-2 Medium (hidden=1024), the communication volumes are:
+  - DP gradient all-reduce: ~354 MB per step (one large operation)
+  - TP activation all-reduce: ~48 MB per step (24 × 1MB small operations)
+
+DP dominates. Putting the larger DP communication on the fast PCIe link saves more time
+than putting the frequent-but-small TP on it.
+
+Estimated communication time:
+  Good: TP(PCIe)≈2ms + DP(TCP)≈590ms = ~592ms
+  Bad:  TP(TCP)≈53ms + DP(PCIe)≈24ms  = ~77ms  ← 7.7× less communication
+
+This shows the "put TP on fast link" heuristic fails for smaller models.
+For larger models (e.g., GPT-2 XL with hidden=1600), TP volume scales as hidden²
+and would eventually dominate, making TP-on-fast-link correct again.
+
+This validates the need for the auto-parallelism configurator to actually cost
+each placement rather than relying on rules of thumb.

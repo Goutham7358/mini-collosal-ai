@@ -6,9 +6,11 @@ We implement GPT-2 as a clean sequence of TransformerBlocks so that:
   - Tensor parallelism can replace Linear layers inside blocks
   - Data parallelism and ZeRO work on the full model
 
-Two configs provided:
+Four configs provided:
+  - GPT2Small:  12 layers, hidden=768,  12 heads (~117M params)
   - GPT2Medium: 24 layers, hidden=1024, 16 heads (~354M params)
   - GPT2Large:  36 layers, hidden=1280, 20 heads (~774M params)
+  - GPT2XL:     48 layers, hidden=1600, 25 heads (~1.5B params)
 """
 
 import torch
@@ -37,6 +39,11 @@ class GPT2Config:
         self.head_dim = hidden_dim // n_heads
 
     @staticmethod
+    def small():
+        """GPT-2 Small: ~117M params."""
+        return GPT2Config(n_layers=12, n_heads=12, hidden_dim=768)
+
+    @staticmethod
     def medium():
         """GPT-2 Medium: ~354M params."""
         return GPT2Config(n_layers=24, n_heads=16, hidden_dim=1024)
@@ -45,6 +52,11 @@ class GPT2Config:
     def large():
         """GPT-2 Large: ~774M params."""
         return GPT2Config(n_layers=36, n_heads=20, hidden_dim=1280)
+
+    @staticmethod
+    def xl():
+        """GPT-2 XL: ~1.5B params."""
+        return GPT2Config(n_layers=48, n_heads=32, hidden_dim=1600)
 
 
 class MultiHeadSelfAttention(nn.Module):

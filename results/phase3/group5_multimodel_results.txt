@@ -1,0 +1,36 @@
+Phase 3 — Group 5: Multi-Model Placement Comparison (8 GPUs, dp=4, tp=2)
+==========================================================================
+Config: dp=4, tp=2, pp=1 (no PP) — isolates DP vs TP placement question
+Hardware: 2× g4dn.12xlarge (4× T4 each), PCIe intra-node, TCP inter-node
+
+Good placement: TP intra-node (PCIe), DP inter-node (TCP)
+Bad placement:  TP inter-node (TCP), DP intra-node (PCIe)
+
+Model          | Params | Good (tok/s) | Bad (tok/s) | Delta  | Winner
+---------------|--------|-------------|-------------|--------|--------
+GPT-2 Small    | 117M   | 5,473       | 5,594       | +2.2%  | Bad
+GPT-2 Medium   | 354M   | 2,288       | 2,315       | +1.2%  | ~Tie
+GPT-2 Large    | 774M   | 2,230       | 2,413       | +8.2%  | Bad
+GPT-2 XL       | 1.5B   | OOM         | OOM         | —      | N/A (>16GB)
+
+Analysis:
+"Bad" placement (DP on fast link) wins or ties for ALL tested model sizes.
+
+This occurs because with dp=4 and tp=2, the DP gradient volume always exceeds
+the TP activation volume:
+
+Model   | DP grad volume     | TP activation volume | Ratio (TP/DP)
+--------|--------------------|--------------------- |----------
+Small   | 117M/2 × 4 = 234MB| 12×2×4×256×768×4=60MB| 0.26
+Medium  | 354M/2 × 4 = 708MB| 24×2×4×256×1024×4=201MB| 0.28
+Large   | 774M/2 × 4= 1548MB| 36×2×4×256×1280×4=377MB| 0.24
+
+DP gradient sync dominates communication in all cases, so placing DP on the
+fast link (PCIe) always helps more than placing TP there.
+
+The larger the model, the bigger the absolute difference (Large: 8.2% vs Small: 2.2%)
+because the absolute DP gradient volume grows, making the TCP-vs-PCIe gap more impactful.
+
+Implication: For models on our T4 hardware (16GB, PCIe ~15GB/s, TCP ~0.6GB/s),
+the conventional "TP on fast link" heuristic is suboptimal. A cost-based
+auto-parallelism configurator would discover the better placement automatically.

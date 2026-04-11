@@ -30,6 +30,7 @@ import torch.nn as nn
 import torch.distributed as dist
 
 from minicolossal.gpt2 import GPT2Config
+from minicolossal.t5 import T5Config
 from minicolossal.plugin import MiniColossalPlugin
 from minicolossal.data import get_dataloader
 
@@ -42,6 +43,13 @@ def main():
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_microbatches", type=int, default=8)
     parser.add_argument("--num_steps", type=int, default=30)
+    parser.add_argument("--bad_placement", action="store_true",
+                        help="Swap DP/PP axes so DP goes inter-node (anti-pattern)")
+    parser.add_argument("--worst_placement", action="store_true",
+                        help="Put TP inter-node (worst possible placement)")
+    parser.add_argument("--model", type=str, default="medium",
+                        choices=["small", "medium", "large", "xl", "t5_base"],
+                        help="Model size (default: medium)")
     args = parser.parse_args()
 
     dist.init_process_group(backend="nccl")
@@ -60,6 +68,8 @@ def main():
         pp_size=args.pp_size,
         zero_stage=args.zero_stage,
         num_microbatches=args.num_microbatches,
+        bad_placement=args.bad_placement,
+        worst_placement=args.worst_placement,
     )
 
     config_name = plugin.info_string()
@@ -74,13 +84,15 @@ def main():
               f"ZeRO={args.zero_stage}")
 
     # ---- Config ----
-    # Use GPT-2 Large for pure PP (4 stages), Medium for everything else
-    if args.pp_size == world_size and args.tp_size == 1:
-        cfg = GPT2Config.large()
-        model_name = "GPT-2 Large"
-    else:
-        cfg = GPT2Config.medium()
-        model_name = "GPT-2 Medium"
+    model_map = {
+        "small": (GPT2Config.small, "GPT-2 Small"),
+        "medium": (GPT2Config.medium, "GPT-2 Medium"),
+        "large": (GPT2Config.large, "GPT-2 Large"),
+        "xl": (GPT2Config.xl, "GPT-2 XL"),
+        "t5_base": (T5Config.base, "T5-base"),
+    }
+    cfg_fn, model_name = model_map[args.model]
+    cfg = cfg_fn()
 
     batch_size = args.batch_size
     # For PP, batch_size is the total fed to each pipeline (split into microbatches)

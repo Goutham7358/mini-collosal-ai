@@ -280,6 +280,221 @@ class TensorParallelTransformerBlock(nn.Module):
         return x
 
 
+# ============================================================================
+# Tensor-Parallel T5 Components
+# ============================================================================
+
+class ParallelSelfAttention(nn.Module):
+    """
+    Multi-head self-attention with heads split across GPUs.
+    Supports both bidirectional (encoder) and causal (decoder) modes.
+    Communication: 1 all-reduce in forward pass.
+    """
+    def __init__(self, cfg, world_size, rank, tp_group=None, causal=False):
+        super().__init__()
+        self.hidden_dim = cfg.hidden_dim
+        self.n_heads = cfg.n_heads
+        self.head_dim = cfg.head_dim
+        self.world_size = world_size
+        self.causal = causal
+
+        assert cfg.n_heads % world_size == 0
+        self.local_n_heads = cfg.n_heads // world_size
+
+        self.qkv_proj = ColumnParallelLinear(
+            cfg.hidden_dim, 3 * cfg.hidden_dim, world_size, rank, tp_group
+        )
+        self.out_proj = RowParallelLinear(
+            cfg.hidden_dim, cfg.hidden_dim, world_size, rank, tp_group
+        )
+        self.attn_dropout = nn.Dropout(cfg.dropout)
+        self.resid_dropout = nn.Dropout(cfg.dropout)
+
+    def forward(self, x):
+        B, T, C = x.shape
+        qkv = self.qkv_proj(x)
+        local_dim = self.local_n_heads * self.head_dim
+        qkv = qkv.reshape(B, T, 3, self.local_n_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        scale = 1.0 / math.sqrt(self.head_dim)
+        attn = torch.matmul(q, k.transpose(-2, -1)) * scale
+        if self.causal:
+            causal_mask = torch.tril(torch.ones(T, T, device=x.device, dtype=torch.bool))
+            attn = attn.masked_fill(~causal_mask, float('-inf'))
+        attn = torch.softmax(attn, dim=-1)
+        attn = self.attn_dropout(attn)
+
+        out = torch.matmul(attn, v)
+        out = out.transpose(1, 2).reshape(B, T, local_dim)
+        out = self.out_proj(out)
+        return self.resid_dropout(out)
+
+
+class ParallelCrossAttention(nn.Module):
+    """
+    Cross-attention with heads split across GPUs.
+    Q from decoder, K/V from encoder — each split column-parallel.
+    Communication: 1 all-reduce in forward pass (from out_proj).
+    This is the EXTRA all-reduce that T5 decoder blocks have over GPT-2.
+    """
+    def __init__(self, cfg, world_size, rank, tp_group=None):
+        super().__init__()
+        self.hidden_dim = cfg.hidden_dim
+        self.n_heads = cfg.n_heads
+        self.head_dim = cfg.head_dim
+        self.world_size = world_size
+
+        assert cfg.n_heads % world_size == 0
+        self.local_n_heads = cfg.n_heads // world_size
+
+        self.q_proj = ColumnParallelLinear(
+            cfg.hidden_dim, cfg.hidden_dim, world_size, rank, tp_group
+        )
+        self.kv_proj = ColumnParallelLinear(
+            cfg.hidden_dim, 2 * cfg.hidden_dim, world_size, rank, tp_group
+        )
+        self.out_proj = RowParallelLinear(
+            cfg.hidden_dim, cfg.hidden_dim, world_size, rank, tp_group
+        )
+        self.attn_dropout = nn.Dropout(cfg.dropout)
+        self.resid_dropout = nn.Dropout(cfg.dropout)
+
+    def forward(self, x, enc_hidden):
+        B, T_dec, C = x.shape
+        T_enc = enc_hidden.shape[1]
+        local_dim = self.local_n_heads * self.head_dim
+
+        q = self.q_proj(x).reshape(B, T_dec, self.local_n_heads, self.head_dim).transpose(1, 2)
+
+        kv = self.kv_proj(enc_hidden)
+        kv = kv.reshape(B, T_enc, 2, self.local_n_heads, self.head_dim)
+        kv = kv.permute(2, 0, 3, 1, 4)
+        k, v = kv[0], kv[1]
+
+        scale = 1.0 / math.sqrt(self.head_dim)
+        attn = torch.matmul(q, k.transpose(-2, -1)) * scale
+        attn = torch.softmax(attn, dim=-1)
+        attn = self.attn_dropout(attn)
+
+        out = torch.matmul(attn, v)
+        out = out.transpose(1, 2).reshape(B, T_dec, local_dim)
+        out = self.out_proj(out)
+        return self.resid_dropout(out)
+
+
+class TensorParallelT5EncoderBlock(nn.Module):
+    """
+    T5 encoder block with tensor-parallel attention and MLP.
+    Communication: 2 all-reduces per block (same as GPT-2).
+    """
+    def __init__(self, cfg, world_size, rank, tp_group=None):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(cfg.hidden_dim)
+        self.attn = ParallelSelfAttention(cfg, world_size, rank, tp_group, causal=False)
+        self.ln2 = nn.LayerNorm(cfg.hidden_dim)
+        self.mlp = ParallelMLP(cfg, world_size, rank, tp_group)
+
+    def forward(self, x, enc_hidden=None):
+        x = x + self.attn(self.ln1(x))
+        x = x + self.mlp(self.ln2(x))
+        return x
+
+
+class TensorParallelT5DecoderBlock(nn.Module):
+    """
+    T5 decoder block with tensor-parallel self-attn, cross-attn, and MLP.
+    Communication: 3 all-reduces per block (1 extra vs GPT-2 for cross-attn).
+    """
+    def __init__(self, cfg, world_size, rank, tp_group=None):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(cfg.hidden_dim)
+        self.self_attn = ParallelSelfAttention(cfg, world_size, rank, tp_group, causal=True)
+        self.ln2 = nn.LayerNorm(cfg.hidden_dim)
+        self.cross_attn = ParallelCrossAttention(cfg, world_size, rank, tp_group)
+        self.ln3 = nn.LayerNorm(cfg.hidden_dim)
+        self.mlp = ParallelMLP(cfg, world_size, rank, tp_group)
+
+    def forward(self, x, enc_hidden):
+        x = x + self.self_attn(self.ln1(x))
+        x = x + self.cross_attn(self.ln2(x), enc_hidden)
+        x = x + self.mlp(self.ln3(x))
+        return x
+
+
+class TensorParallelT5(nn.Module):
+    """
+    Full T5 with 1D tensor parallelism.
+
+    Embeddings are replicated. Encoder blocks get 2 all-reduces each,
+    decoder blocks get 3 all-reduces each (extra for cross-attention).
+
+    For T5-base (12+12 blocks):
+      Encoder: 12 × 2 = 24 all-reduces
+      Decoder: 12 × 3 = 36 all-reduces
+      Total: 60 all-reduces per forward pass (vs GPT-2 Medium's 48)
+    """
+    def __init__(self, cfg, world_size, rank, tp_group=None):
+        super().__init__()
+        self.cfg = cfg
+
+        self.tok_emb = nn.Embedding(cfg.vocab_size, cfg.hidden_dim)
+        self.pos_emb = nn.Embedding(cfg.max_seq_len, cfg.hidden_dim)
+        self.emb_dropout = nn.Dropout(cfg.dropout)
+
+        self.encoder_blocks = nn.ModuleList([
+            TensorParallelT5EncoderBlock(cfg, world_size, rank, tp_group)
+            for _ in range(cfg.n_enc_layers)
+        ])
+        self.enc_ln_f = nn.LayerNorm(cfg.hidden_dim)
+
+        self.decoder_blocks = nn.ModuleList([
+            TensorParallelT5DecoderBlock(cfg, world_size, rank, tp_group)
+            for _ in range(cfg.n_dec_layers)
+        ])
+        self.dec_ln_f = nn.LayerNorm(cfg.hidden_dim)
+
+        self.lm_head = nn.Linear(cfg.hidden_dim, cfg.vocab_size, bias=False)
+        self.lm_head.weight = self.tok_emb.weight
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, (nn.Linear, ColumnParallelLinear, RowParallelLinear)):
+            if hasattr(module, 'weight'):
+                nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if hasattr(module, 'bias') and module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def _embed(self, ids):
+        B, T = ids.shape
+        positions = torch.arange(0, T, device=ids.device).unsqueeze(0)
+        return self.emb_dropout(self.tok_emb(ids) + self.pos_emb(positions))
+
+    def forward(self, input_ids):
+        B, T = input_ids.shape
+        T_half = T // 2
+
+        enc_ids = input_ids[:, :T_half]
+        dec_ids = input_ids[:, T_half:]
+
+        x = self._embed(enc_ids)
+        for block in self.encoder_blocks:
+            x = block(x)
+        enc_hidden = self.enc_ln_f(x)
+
+        x = self._embed(dec_ids)
+        for block in self.decoder_blocks:
+            x = block(x, enc_hidden)
+        x = self.dec_ln_f(x)
+
+        logits = self.lm_head(x)
+        return logits
+
+
 class TensorParallelGPT2(nn.Module):
     """
     Full GPT-2 with 1D tensor parallelism.

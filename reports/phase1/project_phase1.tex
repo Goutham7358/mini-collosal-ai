@@ -1,0 +1,101 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{Exploring Colossal-AI: A Study of Parallelism Strategies for Distributed DNN Training\\}
+
+\author{\IEEEauthorblockN{Dinesh Chand}
+\IEEEauthorblockA{\textit{MTech-AI, IISc-Bangalore} \\
+dineshchand@iisc.ac.in}
+\and
+\IEEEauthorblockN{Goutham P}
+\IEEEauthorblockA{\textit{MTech-AI, IISc-Bangalore} \\
+gouthamp@iisc.ac.in}
+\and
+\IEEEauthorblockN{Meena Chidambaram}
+\IEEEauthorblockA{\textit{MTech-AI, IISc-Bangalore} \\
+meenac@iisc.ac.in}
+\and
+\IEEEauthorblockN{Nadhiya R S}
+\IEEEauthorblockA{\textit{MTech-AI, IISc-Bangalore} \\
+nadhiyar@iisc.ac.in}
+}
+
+\maketitle
+
+\begin{abstract}
+Modern DNN models like LLMs require billions of parameters to be trained, which is beyond the capacity of any single accelerator device. To train such models, distributed training techniques such as data, pipeline, and tensor parallelism are required. Frameworks like Colossal-AI provide a unified interface to scale sequential training code to distributed environments, allowing researchers to focus on model design rather than distributed training techniques. In this project, we implement advanced distributed training strategies inspired by Colossal-AI — asynchronous interleaved pipeline, multi-dimensional tensor, and data parallelism — and benchmark them against PyTorch's native distributed training primitives. We further study the memory efficiency tradeoffs between PyTorch's FSDP (Fully Sharded Data Parallel) sharding strategies.
+\end{abstract}
+
+\begin{IEEEkeywords}
+DNN, Distributed Training, Pipeline Parallelism, Tensor Parallelism, Data Parallelism,
+\end{IEEEkeywords}
+
+\section{Introduction}
+The rapid evolution of Deep Learning has been driven by the success of Transformer-based architectures, which have pushed model scales from millions to billions of parameters. Landmark models such as BERT \cite{DBLP:journals/corr/abs-1810-04805} and GPT-3 \cite{DBLP:journals/corr/abs-2005-14165} have demonstrated that increasing model capacity significantly improves performance on downstream tasks. However, this growth has created a severe "memory wall," where the size of model parameters, gradients, and optimizer states exceeds the memory capacity of even the most advanced single-GPU systems \cite{10.1145/3605573.3605613}.
+
+To address this, distributed training has become a necessity. While Data Parallelism (DP) is the standard approach for smaller models, it suffers from memory redundancy, as it requires replicating the entire model on every device. Consequently, researchers have developed advanced parallelism techniques to shard model states across multiple accelerators. Notable systems such as Megatron-LM \cite{DBLP:journals/corr/abs-1909-08053} introduced Tensor Parallelism to split individual layers, while DeepSpeed \cite{rajbhandari2019zero} proposed the Zero Redundancy Optimizer (ZeRO) to partition optimizer states. Furthermore, Pipeline Parallelism frameworks such as GPipe \cite{DBLP:journals/corr/abs-1811-06965} and PipeDream \cite{10.1145/3341301.3359646} enable the distribution of distinct layers across devices.
+
+Colossal-AI \cite{10.1145/3605573.3605613} is a unified deep learning system that offers advanced parallelism strategies such as multi-dimensional tensor parallelism (2D, 2.5D, 3D) and non-synchronous interleaved 1F1B pipeline parallelism. In this project, we implement these advanced strategies from Colossal-AI, along with data parallelism, and benchmark them against PyTorch's native distributed training primitives.
+\section{Related Work}
+The landscape of large-scale model training is defined by several distinct parallelization strategies. This section reviews the key contributions relevant to our project.
+
+\subsection{Large-Scale Language Models} The trend toward massive models was solidified by Devlin et al. with BERT \cite{DBLP:journals/corr/abs-1810-04805}, which utilized bidirectional training to understand the language. Subsequently, Brown et al. introduced GPT-3 \cite{DBLP:journals/corr/abs-2005-14165}, a 175-billion parameter model that demonstrated few-shot learning capabilities but required massive distributed clusters for training. These models serve as the primary motivation for developing efficient parallel training systems.
+
+\subsection{Data Parallelism and Optimizer} Optimization Standard Data Parallelism is limited by memory redundancy. To overcome this, Rajbhandari et al. introduced ZeRO (Zero Redundancy Optimizer) within the DeepSpeed framework \cite{rasley2020deepspeed}. ZeRO partitions optimizer states, gradients, and parameters across data-parallel processes, allowing models with billions of parameters to fit into aggregate GPU memory without requiring model parallelism.
+
+\subsection{Tensor Parallelism} Tensor Parallelism (TP) splits the computation of individual layers across GPUs. Shoeybi et al. proposed Megatron-LM \cite{DBLP:journals/corr/abs-1909-08053}, which implements 1D Tensor Parallelism by splitting the General Matrix Multiplications (GEMMs) in Transformer layers. While effective, 1D TP requires significant communication overhead. To mitigate this, Colossal-AI \cite{10.1145/3605573.3605613} introduced multi-dimensional tensor parallelism (2D, 2.5D, and 3D), based on algorithms like SUMMA \cite{vandeGeijn1995summa} and 2.5D matrix multiplication \cite{10.1007/978-3-642-23397-5_10}, which theoretically reduce communication volume and memory costs.
+
+\subsection{Pipeline Parallelism} Pipeline Parallelism (PP) partitions a model into segments of consecutive layers, with each segment assigned to a separate device. Multiple micro-batches are injected into the pipeline so that different devices process different micro-batches concurrently, unlike naive model parallelism where only one device is active at a time. Its primary drawback is bubble time which is the idle time caused by inter-stage dependencies. GPipe \cite{DBLP:journals/corr/abs-1811-06965} proposed synchronous PP by splitting mini-batches into micro-batches, accumulating gradients, and flushing the pipeline before weight updates. Chimera \cite{li2021chimera} also employs synchronous PP but introduces bidirectional pipelines (two pipelines running in opposite directions across the same devices) to reduce bubble time. On the asynchronous side, PipeDream \cite{10.1145/3341301.3359646} introduced the 1F1B (one forward, one backward) schedule to avoid pipeline flushes, and PipeDream-2BW \cite{narayanan2021memory} improved its memory efficiency by maintaining only two weight versions instead of one per pipeline stage. Colossal-AI \cite{10.1145/3605573.3605613} adopts the 1F1B schedule with both non-interleaved and interleaved (where each device holds multiple non-contiguous stages) variants, and integrates it with data and tensor parallelism as part of its hybrid parallelism framework.
+
+\subsection{Heterogeneous Training} To utilize CPU memory for training larger models, Ren et al. introduced ZeRO-Offload [11], which offloads optimizer states and gradients to the CPU. This allows for training multi-billion parameter models on a single GPU by treating CPU memory as an extension of GPU memory. As an advancement in this domain, SwapAdvisor \cite{huang2020swapadvisor} established dynamic planning which leverages genetic algorithms to automatically search for the optimal operator scheduling and memory allocation plan. So, instead of swapping when the memory is full, this system plans ahead.
+
+\subsection{Mixed Precision} In standard training (FP32), every number (weight, activation, gradient) is stored as a 32-bit float, whereas in Mixed Precision, these values are stored as 16-bit float (FP16) which takes up 50\% less space. This technique maintains a master copy of weights in FP32 while performing forward and backward passes in FP16. in addition with FP16 data the GPU engages the Tensor Cores. These cores can multiply large grids of numbers in a single clock cycle, leading to a 3x to 8x speedup in training. This is implemented in Mixed Precision Training \cite{micikevicius2018mixed}, which effectively reduces memory and increases speed while preventing precision loss.
+
+\section{Brief Plan of Action}
+
+Our research project aims to evaluate how distributed training architectures have evolved by comparing standard PyTorch implementations with our implementations advanced strategies from Colossal AI \cite{10.1145/3605573.3605613}. Rather than a single model for all, we will be using specific architecture that best highlights the performance improvement for each individual technique.
+The study is structured across 4 techniques of parallelism:
+\begin{itemize}
+    \item Data Parallelism: For the baseline we will compare naive single-GPU training against our implementation of Distributed Data Parallel (DDP) to measure the actual throughput gains we get.
+    \item Tensor Parallelism: Here, we'll contrast PyTorch’s standard 1D approach with our own manual implementation of 2D and 3D tensor parallelism to see how multidimensional slicing can cut down on communication bottlenecks.
+    \item Memory and Sharding: To study memory optimization, we compare PyTorch's FSDP1 (coarse "flat sharding") against PyTorch's FSDP2 (per-parameter sharding) to determine if finer granularity leads to more predictable memory usage.
+    \item Pipeline Parallelism: By comparing PyTorch's synchronous pipeline parallelism against our implementation of an non-synchronous interleaved 1F1B pipeline parallelism, we aim to prove that interleaving micro-batches can effectively wipe out the idle "bubbles" that slow down sequential training.
+\end{itemize}
+Throughout every stage, we’ll be tracking various metrics such as Model FLOPs Utilization (MFU) and TFLOPS and using them to display the various comparisons.
+
+\section{Final Goal}
+
+The goal of this project is to quantitatively evaluate the performance and scalability impact of four distributed training strategies through systematic benchmarking under controlled hardware settings. Our focus is to measure how each parallelism technique influences computational efficiency, memory utilization, communication overhead, and overall scaling behavior.
+
+For data parallelism, we quantify the speedup achieved when moving from single-GPU training to Distributed Data Parallel (DDP), measuring throughput and scaling efficiency across GPUs.
+
+For tensor parallelism, we evaluate how transitioning from 1D tensor partitioning to 2D and 3D partitioning impacts Model FLOPs Utilization (MFU), communication overhead, and effective compute throughput (TFLOPS).
+
+For memory and sharding, we measure differences between FSDP1’s flat sharding and FSDP2’s per-parameter sharding in terms of peak GPU memory usage, memory fragmentation behavior, and maximum feasible batch size under a fixed 24,GB GPU constraint.
+
+For pipeline parallelism, we quantify the reduction in GPU idle time when moving from synchronous scheduling to a non-synchronous interleaved 1F1B schedule, and measure the corresponding improvement in overall throughput.
+
+Overall, our aim is to gain a deeper understanding of the different types of parallelism by exploring their low-level designs and developing our own versions of each technique.
+
+\newpage
+
+% ------------------------------------------------------------------------------
+% Reference and Cited Works
+% ------------------------------------------------------------------------------
+
+\bibliographystyle{ieeetr}
+\bibliography{../../references}
+
+% ------------------------------------------------------------------------------
+
+\end{document}

@@ -111,25 +111,37 @@ class PipelineStage(nn.Module):
 
 def send_forward(tensor, dst_rank):
     """Send activation tensor to the next stage."""
-    dist.send(tensor.contiguous(), dst=dst_rank)
+    ops = [dist.P2POp(dist.isend, tensor.contiguous(), dst_rank)]
+    reqs = dist.batch_isend_irecv(ops)
+    for req in reqs:
+        req.wait()
 
 
 def recv_forward(shape, dtype, device, src_rank):
     """Receive activation tensor from the previous stage."""
     tensor = torch.zeros(shape, dtype=dtype, device=device)
-    dist.recv(tensor, src=src_rank)
+    ops = [dist.P2POp(dist.irecv, tensor, src_rank)]
+    reqs = dist.batch_isend_irecv(ops)
+    for req in reqs:
+        req.wait()
     return tensor
 
 
 def send_backward(tensor, dst_rank):
     """Send gradient tensor to the previous stage."""
-    dist.send(tensor.contiguous(), dst=dst_rank)
+    ops = [dist.P2POp(dist.isend, tensor.contiguous(), dst_rank)]
+    reqs = dist.batch_isend_irecv(ops)
+    for req in reqs:
+        req.wait()
 
 
 def recv_backward(shape, dtype, device, src_rank):
     """Receive gradient tensor from the next stage."""
     tensor = torch.zeros(shape, dtype=dtype, device=device)
-    dist.recv(tensor, src=src_rank)
+    ops = [dist.P2POp(dist.irecv, tensor, src_rank)]
+    reqs = dist.batch_isend_irecv(ops)
+    for req in reqs:
+        req.wait()
     return tensor
 
 
@@ -304,26 +316,36 @@ def one_f_one_b_forward_backward(
     forward_idx = 0     # next microbatch to forward
     backward_idx = 0    # next microbatch to backward
 
+    # For T5 encoder-decoder, hidden activations are half the sequence length
+    is_t5 = getattr(cfg, 'is_t5', False)
+    hidden_seq_len = cfg.max_seq_len // 2 if is_t5 else cfg.max_seq_len
+
     def do_forward():
         nonlocal forward_idx, total_loss
         mb_idx = forward_idx
         forward_idx += 1
 
+        mb_input = microbatches[mb_idx][0].to(device)
+
         if is_first:
-            mb_input = microbatches[mb_idx][0].to(device)
             output = stage(None, input_ids=mb_input)
         else:
-            hidden_shape = (microbatches[0][0].shape[0], cfg.max_seq_len, cfg.hidden_dim)
+            hidden_shape = (mb_input.shape[0], hidden_seq_len, cfg.hidden_dim)
             recv_act = recv_forward(hidden_shape, torch.float32, device, _prev)
             recv_act.requires_grad_(True)
             input_queue.append(recv_act)
-            output = stage(recv_act)
+            # Pass input_ids to all stages — T5 decoder needs it for embedding,
+            # GPT-2 non-first stages ignore it
+            output = stage(recv_act, input_ids=mb_input)
 
         if not is_last:
             send_forward(output, _next)
             output_queue.append(output)
         else:
             mb_target = microbatches[mb_idx][1].to(device)
+            if is_t5:
+                # T5 decoder outputs logits for second half only
+                mb_target = mb_target[:, mb_target.shape[1] // 2:].contiguous()
             loss = criterion(output.view(-1, cfg.vocab_size), mb_target.view(-1))
             total_loss += loss.item()
             output_queue.append((output, loss))

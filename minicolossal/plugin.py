@@ -37,9 +37,10 @@ from minicolossal.pipeline_parallel import (
     split_into_microbatches,
     one_f_one_b_forward_backward,
 )
-from minicolossal.tensor_parallel import TensorParallelGPT2
+from minicolossal.tensor_parallel import TensorParallelGPT2, TensorParallelT5
 from minicolossal.zero_optim import ZeROStage1Optimizer
 from minicolossal.gpt2 import GPT2Config, GPT2Model
+from minicolossal.t5 import T5Config, T5Model, create_t5_pipeline_stage
 
 
 # ============================================================================
@@ -193,13 +194,16 @@ class MiniColossalPlugin:
             loss = plugin.train_step(model, optimizer, data, criterion)
     """
 
-    def __init__(self, tp_size=1, pp_size=1, zero_stage=0, num_microbatches=8):
+    def __init__(self, tp_size=1, pp_size=1, zero_stage=0, num_microbatches=8,
+                 bad_placement=False, worst_placement=False):
         self.world_size = dist.get_world_size()
         self.global_rank = dist.get_rank()
         self.tp_size = tp_size
         self.pp_size = pp_size
         self.zero_stage = zero_stage
         self.num_microbatches = num_microbatches
+        self.bad_placement = bad_placement
+        self.worst_placement = worst_placement
 
         # Validate
         assert self.world_size % (tp_size * pp_size) == 0, \
@@ -212,22 +216,40 @@ class MiniColossalPlugin:
                 "ZeRO stage must be 0 or 1 when using pipeline parallelism " \
                 "(ZeRO-2 has prohibitive gradient sync costs with PP)"
 
-        # Create 3D mesh: (dp_size, pp_size, tp_size)
-        self.mesh = ProcessGroupMesh(self.dp_size, pp_size, tp_size)
+        # Create 3D mesh.
+        # Good placement:  (pp, dp, tp) — PP is first axis (slowest = inter-node)
+        #                                 DP+TP are fast axes (intra-node PCIe)
+        # Bad placement:   (dp, pp, tp) — DP is first axis (slowest = inter-node)
+        #                                 forcing heavier DP traffic over slow TCP
+        # Worst placement: (tp, pp, dp) — TP is first axis (slowest = inter-node)
+        #                                 TP all-reduces forced over slow TCP
+        if worst_placement:
+            self.mesh = ProcessGroupMesh(tp_size, pp_size, self.dp_size)
+            tp_axis, pp_axis, dp_axis = 0, 1, 2
+        elif bad_placement:
+            self.mesh = ProcessGroupMesh(self.dp_size, pp_size, tp_size)
+            dp_axis, pp_axis, tp_axis = 0, 1, 2
+        else:
+            self.mesh = ProcessGroupMesh(pp_size, self.dp_size, tp_size)
+            dp_axis, pp_axis, tp_axis = 1, 0, 2
+
+        self._dp_axis = dp_axis
+        self._pp_axis = pp_axis
+        self._tp_axis = tp_axis
 
         # Extract process groups along each axis
-        self.dp_group = self.mesh.get_group_along_axis(DP_AXIS) if self.dp_size > 1 else None
-        self.pp_group = self.mesh.get_group_along_axis(PP_AXIS) if pp_size > 1 else None
-        self.tp_group = self.mesh.get_group_along_axis(TP_AXIS) if tp_size > 1 else None
+        self.dp_group = self.mesh.get_group_along_axis(dp_axis) if self.dp_size > 1 else None
+        self.pp_group = self.mesh.get_group_along_axis(pp_axis) if pp_size > 1 else None
+        self.tp_group = self.mesh.get_group_along_axis(tp_axis) if tp_size > 1 else None
 
         # Per-axis ranks for this process
-        self.dp_rank = self.mesh.coord[DP_AXIS]
-        self.pp_rank = self.mesh.coord[PP_AXIS]
-        self.tp_rank = self.mesh.coord[TP_AXIS]
+        self.dp_rank = self.mesh.coord[dp_axis]
+        self.pp_rank = self.mesh.coord[pp_axis]
+        self.tp_rank = self.mesh.coord[tp_axis]
 
         # PP neighbor global ranks (for send/recv)
         if pp_size > 1:
-            pp_global_ranks = self.mesh.get_ranks_along_axis(PP_AXIS)
+            pp_global_ranks = self.mesh.get_ranks_along_axis(self._pp_axis)
             self.pp_prev = pp_global_ranks[self.pp_rank - 1] if self.pp_rank > 0 else None
             self.pp_next = pp_global_ranks[self.pp_rank + 1] if self.pp_rank < pp_size - 1 else None
         else:
@@ -246,24 +268,36 @@ class MiniColossalPlugin:
           - Neither    → Full GPT2Model
         """
         # --- Build model ---
+        is_t5 = getattr(cfg, 'is_t5', False)
         if self.pp_size > 1:
             # Pipeline parallelism: each rank holds a subset of layers
-            model = create_pipeline_stage(cfg, self.pp_size, self.pp_rank, device)
+            if is_t5:
+                model = create_t5_pipeline_stage(cfg, self.pp_size, self.pp_rank, device)
+            else:
+                model = create_pipeline_stage(cfg, self.pp_size, self.pp_rank, device)
         elif self.tp_size > 1:
             # Tensor parallelism: each rank holds sharded layers
-            model = TensorParallelGPT2(
-                cfg, self.tp_size, self.tp_rank, self.tp_group
-            ).to(device)
+            if is_t5:
+                model = TensorParallelT5(
+                    cfg, self.tp_size, self.tp_rank, self.tp_group
+                ).to(device)
+            else:
+                model = TensorParallelGPT2(
+                    cfg, self.tp_size, self.tp_rank, self.tp_group
+                ).to(device)
         else:
             # Full model (DP only)
-            model = GPT2Model(cfg).to(device)
+            if is_t5:
+                model = T5Model(cfg).to(device)
+            else:
+                model = GPT2Model(cfg).to(device)
 
         # Sync parameters within DP group so replicas start identical
         if self.dp_size > 1:
             for param in model.parameters():
                 # Broadcast from dp_rank=0 within each DP sub-group
                 src_coord = list(self.mesh.coord)
-                src_coord[DP_AXIS] = 0
+                src_coord[self._dp_axis] = 0
                 src_global = self.mesh._ravel(tuple(src_coord), self.mesh.shape)
                 dist.broadcast(param.data, src=src_global, group=self.dp_group)
 
@@ -305,6 +339,8 @@ class MiniColossalPlugin:
 
         loss_val = 0.0
 
+        is_t5 = getattr(cfg, 'is_t5', False)
+
         if self.pp_size > 1:
             # --- Pipeline parallelism path ---
             microbatches = split_into_microbatches(
@@ -320,7 +356,12 @@ class MiniColossalPlugin:
             input_ids = input_ids.to(device)
             target_ids = target_ids.to(device)
             logits = model(input_ids)
-            loss = criterion(logits.view(-1, cfg.vocab_size), target_ids.view(-1))
+            if is_t5:
+                # T5 returns logits for decoder half only: (B, T//2, vocab)
+                dec_targets = target_ids[:, target_ids.shape[1] // 2:].contiguous()
+                loss = criterion(logits.view(-1, cfg.vocab_size), dec_targets.view(-1))
+            else:
+                loss = criterion(logits.view(-1, cfg.vocab_size), target_ids.view(-1))
             loss.backward()
             loss_val = loss.item()
 

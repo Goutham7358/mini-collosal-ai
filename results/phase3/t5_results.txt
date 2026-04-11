@@ -1,0 +1,114 @@
+Multi-Model Experiment Results: GPT-2 vs T5
+=============================================
+
+Goal: Show that hybrid parallelism benefits differ across model architectures.
+      GPT-2 (decoder-only, symmetric) scales better than T5 (encoder-decoder,
+      asymmetric) under the same hybrid parallelism configuration and hardware.
+
+Hardware: 2× g4dn.12xlarge (4× T4 per node, PCIe intra-node ~15 GB/s,
+          TCP inter-node ~0.6 GB/s)
+Config:   dp=2, pp=2, tp=2 on 8 GPUs
+
+=== Models ===
+
+  GPT-2 Small:  12 decoder layers, hidden=768,  8 heads, ~117M params
+  T5-base:      12 encoder + 12 decoder layers, hidden=768, 12 heads, ~237M params
+  GPT-2 Medium: 24 decoder layers, hidden=1024, 16 heads, ~345M params
+
+=== Hybrid Parallelism Speedup Over Single-GPU Baseline ===
+
+  Model          | Params | Single GPU  | Hybrid 8-GPU | Speedup
+  GPT-2 Small    | 117M   | 3,879 tok/s | 8,678 tok/s  | 2.24×
+  T5-base        | 237M   | 3,359 tok/s | 5,790 tok/s  | 1.72×
+  GPT-2 Medium   | 345M   | 1,404 tok/s | 3,519 tok/s  | 2.51×
+
+  KEY FINDING: Using the same hardware and same hybrid parallelism config,
+  GPT-2 achieves 2.2–2.5× speedup while T5 achieves only 1.72×.
+  Both GPT-2 variants scale similarly despite different sizes,
+  confirming the difference is architectural, not size-related.
+
+=== Why GPT-2 Scales Better ===
+
+1. SYMMETRIC PIPELINE (PP):
+   GPT-2 has identical transformer blocks → balanced pipeline stages.
+   T5 encoder-decoder split creates load imbalance:
+     - Encoder stage: 2.51 GB peak memory
+     - Decoder stage: 3.87 GB peak memory (54% more)
+   In the 1F1B schedule, the encoder completes each microbatch faster than
+   the decoder and must wait every cycle for the decoder to catch up.
+   These per-microbatch idle gaps accumulate into significant throughput loss.
+   GPT-2 stages: 1.65 vs 1.71 GB (Small), 4.07 vs 4.08 GB (Medium) → balanced.
+
+2. FEWER ALL-REDUCE OPERATIONS (TP):
+   GPT-2 block = self-attn + MLP → 2 all-reduces per block
+   T5 encoder block = self-attn + MLP → 2 all-reduces per block
+   T5 decoder block = self-attn + CROSS-ATTN + MLP → 3 all-reduces per block
+   Total per forward pass:
+     GPT-2 Small (12 blocks):  12 × 2 = 24 all-reduces
+     GPT-2 Medium (24 blocks): 24 × 2 = 48 all-reduces
+     T5-base (12+12 blocks):   12 × 2 + 12 × 3 = 60 all-reduces (25% more than Medium!)
+   More all-reduces = more TP communication overhead.
+
+=== T5 Single-Node Baselines (PCIe) ===
+
+  Config     | T5-base     | GPT-2 Medium | GPT-2 Small
+  Single GPU | 3,359 tok/s | 1,404 tok/s  | 3,879 tok/s
+  DP(4)      | 6,477 tok/s | 5,308*       | 8,546*
+  TP(4)      | 5,029 tok/s | 5,131*       | 5,458*
+  PP(2) PCIe | 4,297 tok/s | N/A (PP=4)   | N/A (PP=4)
+  (* from previous Phase 3 experiments)
+
+=== 8-GPU Placement Comparison (dp=2, pp=2, tp=2) ===
+
+  Three placements tested — what goes on the slow inter-node TCP link:
+
+                           | T5-base     | GPT-2 Medium
+  Good  (PP inter-node)    | 5,790 tok/s | 3,519 tok/s
+  TP inter-node            | 5,838 tok/s | 3,543 tok/s
+  Bad   (DP inter-node)    | 4,558 tok/s | 2,926 tok/s
+
+  Good/Bad speedup         | +27.0%      | +20.3%
+
+  SURPRISING FINDING: TP inter-node shows NO penalty vs good placement!
+  DP inter-node is the actual worst placement, not TP inter-node.
+
+  Why: With TP=2, each all-reduce is between just 2 GPUs. Individual
+  message sizes are small (few hundred KB to few MB per all-reduce).
+  TCP at ~0.6 GB/s handles these fine despite high frequency.
+
+  DP gradient sync, on the other hand, moves the ENTIRE model's gradients
+  in one shot (~950 MB for T5, ~1.4 GB for GPT-2 Medium). This single
+  massive bandwidth-bound transfer saturates the slow TCP link.
+
+  This means the correct placement heuristic is:
+    → Put the BANDWIDTH-HEAVY axis on the fast link (DP on PCIe)
+    → The LATENCY-SENSITIVE axis (TP) tolerates TCP at small TP degrees
+    → PP has minimal communication volume and tolerates any link
+
+  GPT-2 Small good placement results (from previous experiments):
+    Good: 8,546 tok/s  |  Bad (DP inter-node): 7,156 tok/s  |  +19.4%
+
+=== Takeaways for Report ===
+
+1. ARCHITECTURE DETERMINES HYBRID SCALING, NOT MODEL SIZE.
+   GPT-2 (decoder-only) achieves 2.2–2.5× hybrid speedup.
+   T5 (encoder-decoder) achieves only 1.72× with the same config.
+   Two factors: pipeline imbalance from asymmetric stages, and
+   25% more TP all-reduces from cross-attention.
+
+2. PIPELINE IMBALANCE IN ENCODER-DECODER MODELS.
+   T5 encoder stage (2.51 GB) vs decoder stage (3.87 GB) — 54% heavier.
+   GPT-2 stages are near-identical (4.07 vs 4.08 GB).
+   The encoder repeatedly waits for the slower decoder in the 1F1B
+   schedule, wasting compute on every microbatch cycle.
+
+3. DP IS THE MOST PLACEMENT-SENSITIVE AXIS (not TP at small degrees).
+   DP inter-node: 17–27% throughput penalty (bandwidth-bound, huge volume).
+   TP inter-node: ~0% penalty at TP=2 (many small messages, latency-bound
+     but individual messages small enough for TCP).
+   PP inter-node: ~0% penalty (tiny P2P activation sends).
+   The correct heuristic is: keep DP on the fastest link.
+
+4. PLACEMENT EFFECT IS STRONGER FOR T5 (+27%) THAN GPT-2 (+20%).
+   T5's higher communication volume (cross-attention gradients in DP sync)
+   makes it more sensitive to the DP placement decision.
