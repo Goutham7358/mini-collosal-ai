@@ -1,0 +1,36 @@
+Slide 1: Add email ids below.
+Slide 2: Use Abstract from Phase 2 and Phase 3 to create the slide 2 Problem Statement and Motivation. Remove "Production frameworks (DeepSpeed, Colossal-AI) hide internals—hard to understand trade-offs"
+
+Build every parallelism strategy from scratch using only torch.distributed primitives, and
+study how hardware topology affects their relative performance.
+-> Hardware topology and model architecture also affects it
+
+Seprate slide for "Data Parallelism (DP): replicate model, sync gradients ZeRO: shard optimizer states
+Tensor Parallelism (TP): split layers, 2 all-reduces/block Pipeline Parallelism (PP): split stages, send
+activations"
+
+4 strategies plus hybrid mesh should be in a new slide called Methodology and other details of Methodology should also be added.
+
+Methodology
+1. Four Parallelism Strategies (Built from Scratch)
+2.Unified 3D Hybrid Plugin
+3.Hardware Setup
+4. Communication-Aware Placement
+5. Multi-Model Evaluation
+
+
+
+Slide organisation
+Problem Statement And Motivation
+Methodology
+RESULTS -> Two parts
+
+Include 
+
+
+Slide 3: Need to paste image corresponding to table and talk about results from phase 2. 
+
+Next slide after slide 3: 
+Phase 3 AIM
+
+
