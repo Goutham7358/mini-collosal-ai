@@ -269,7 +269,7 @@
     \textbf{Bad} (DP inter-node) drops to 2,926 --- a \textbf{20\% penalty}.
 
     \vspace{0.5em}
-    With ZeRO-1 added, the gap widens further (Good 3,044 vs Bad 2,416 = \textbf{$-$21\%}).
+    With ZeRO-1 added, the gap widens further (Good 3,044 vs Bad 2,416 = \textbf{$+$26\%}).
 
     \vspace{0.5em}
     The bottleneck is not TP (small messages at TP=2), but \textbf{DP gradient sync} ($\sim$1.4 GB transferred in one shot).

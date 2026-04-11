@@ -160,7 +160,7 @@ Here is what surprised us. TP inter-node performs almost identically to Good pla
 
 DP gradient synchronization, on the other hand, transfers about 1.4 gigabytes for GPT-2 Medium in a single operation. That completely saturates the slow TCP link. So DP turns out to be the real placement bottleneck here, not TP.
 
-When we add ZeRO-1, the gap gets even wider: Good 3,044 versus Bad 2,416, a 21\% difference. ZeRO adds extra optimizer-state communication to the DP axis, making it even more sensitive to link speed.
+When we add ZeRO-1, the gap gets even wider: Good 3,044 versus Bad 2,416 --- Good is now 26\% faster. ZeRO adds extra optimizer-state communication to the DP axis, making it even more sensitive to link speed.
 
 Now let me hand over to Dinesh for the T5 results and the multi-model comparison.
 
