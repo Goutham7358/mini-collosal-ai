@@ -27,37 +27,31 @@
 \newpage
 
 % ======================================================================
-\section{Nadhiya R S --- Problem Statement \& Summary}
+\section{Nadhiya R S --- Problem Statement, Strategies \& Summary}
 % ======================================================================
 
 \subsection{Title Slide}
 \textit{[Title slide displayed. Nadhiya introduces the team.]}
 
-Hi everyone. We are Team Mini Colossal-AI. Our members are Dinesh, Goutham, Meena, and myself, Nadhiya --- all from MTech-AI at IISc. I will start with the problem statement and motivation, then hand over to Goutham for methodology, Meena and Dinesh will walk through the results, and I will wrap up with the summary.
+Hi everyone. We are Team Mini Colossal-AI. Our members are Dinesh, Goutham, Meena, and myself, Nadhiya --- all from MTech-AI at IISc. I will start with the problem statement, motivation, and the four parallelism strategies we built, then hand over to Goutham for the hybrid methodology, Meena and Dinesh will walk through the results, and I will wrap up with the summary.
 
 \subsection{Slide: Problem Statement \& Motivation ($\sim$1.5 min)}
 \textit{[Slide shows problem statement, what we did list.]}
 
-So, the core problem is this: modern large language models require more memory and communication than a single GPU can provide, and different parallelism strategies trade off bandwidth, latency, and memory in very different ways.
+So, the core problem. Modern language models have hundreds of millions to billions of parameters. A single GPU simply cannot hold all the model weights, gradients, and optimizer states needed for training. You need to split the work across multiple GPUs.
 
-Our work focuses on evaluating those trade-offs on a heterogeneous cluster with fast intra-node links and slower inter-node links. We ask: how does placement matter when the cluster has both PCIe and TCP tiers? And how does the answer change across different model architectures?
+There are multiple ways to do that --- Data Parallelism, Tensor Parallelism, Pipeline Parallelism, and ZeRO optimizer sharding. Each has very different communication patterns and memory trade-offs. I will walk through each of them in the next slide.
 
-To answer these questions, we built a unified experiment pipeline that can compare Data Parallelism, Tensor Parallelism, Pipeline Parallelism, and ZeRO both as standalone strategies and in hybrid combinations. We tested on two hardware phases and two model families: GPT-2, which is a decoder-only transformer, and T5, which is an encoder-decoder model.
+The question is: which strategy works best, and does it depend on the hardware you are running on? That is what we set out to study.
+
+What makes our project different is that we did not use any high-level framework. We implemented all four strategies from scratch using only low-level \texttt{torch.distributed} calls like send, recv, and all-reduce. We then composed them into hybrid configurations using a unified plugin, tested on two different cluster setups, and ran experiments on two model architectures --- GPT-2 which is decoder-only, and T5 which is encoder-decoder.
 
 The main finding, which we will show in detail, is that both the hardware topology and the model architecture significantly affect which strategy works best and how much speedup you actually get.
-
-\textit{[Hand over to Goutham.]}
-
-I will now hand over to Goutham who will explain our methodology.
-
-% ======================================================================
-\section{Goutham P --- Methodology}
-% ======================================================================
 
 \subsection{Slide: Four Parallelism Strategies ($\sim$50s)}
 \textit{[Slide shows the four strategies with communication table.]}
 
-Thanks Nadhiya. Let me walk through how we designed the system so that we can compare these strategies fairly and measure the effect of placement explicitly.
+Let me walk through what we actually built.
 
 First, Data Parallelism. Each GPU holds a full copy of the model and processes a different data shard. After the backward pass, we average gradients across all GPUs using all-reduce. Simple, but it means every GPU needs enough memory for the full model.
 
@@ -67,12 +61,20 @@ Third, Tensor Parallelism. We followed the Megatron-LM approach --- 1D column an
 
 Fourth, Pipeline Parallelism with the 1F1B schedule. We split the model's layers across stages and send activations between them. The 1F1B schedule interleaves forward and backward passes to keep stages busy, reducing idle time compared to a naive sequential schedule.
 
-We combined these pieces into a single configurable framework, which let us swap placement and hybrid layouts without changing the core model code.
+Everything is implemented from scratch using just four primitives from \texttt{torch.distributed}.
+
+\textit{[Hand over to Goutham.]}
+
+I will now hand over to Goutham who will explain how we composed these into a hybrid system.
+
+% ======================================================================
+\section{Goutham P --- Methodology}
+% ======================================================================
 
 \subsection{Slide: Unified 3D Hybrid Plugin ($\sim$40s)}
 \textit{[Slide shows the 3D mesh diagram and plugin API.]}
 
-Now, the interesting part is composing these strategies. We wrote a single unified plugin that takes TP size, PP size, and ZeRO stage as arguments. It automatically computes the DP size as world size divided by TP times PP.
+Thanks Nadhiya. The interesting part is composing these strategies. We wrote a single unified plugin that takes TP size, PP size, and ZeRO stage as arguments. It automatically computes the DP size as world size divided by TP times PP.
 
 The plugin creates what we call a 3D process group mesh. You can see it on the left --- each GPU sits at a point in a (2,2,2) grid with three axes. Each axis has size 2, so there are 4 groups of size 2 along every axis. Let me walk through what each group does.
 
