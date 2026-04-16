@@ -157,8 +157,110 @@ def split_into_microbatches(input_ids, target_ids, num_microbatches):
 
 
 # ============================================================================
+# Tensor-Parallel Pipeline Stage (for PP + TP combined / true 3D)
+# ============================================================================
+
+class TensorParallelPipelineStage(nn.Module):
+    """
+    Pipeline stage with tensor-parallel transformer blocks.
+
+    Same as PipelineStage but uses TensorParallelTransformerBlock instead of
+    plain TransformerBlock. This enables true 3D parallelism (DP × PP × TP)
+    where each pipeline stage's layers are also sharded across TP ranks.
+
+    Without this class, the plugin's configure() falls through to PipelineStage
+    which uses unsharded blocks, making TP groups carry no traffic.
+    """
+    def __init__(self, cfg, block_indices, is_first, is_last,
+                 tp_size, tp_rank, tp_group):
+        super().__init__()
+        from minicolossal.tensor_parallel import TensorParallelTransformerBlock
+
+        self.cfg = cfg
+        self.is_first = is_first
+        self.is_last = is_last
+        self.block_indices = block_indices
+
+        # First stage gets embeddings (replicated across TP ranks)
+        if is_first:
+            self.tok_emb = nn.Embedding(cfg.vocab_size, cfg.hidden_dim)
+            self.pos_emb = nn.Embedding(cfg.max_seq_len, cfg.hidden_dim)
+            self.emb_dropout = nn.Dropout(cfg.dropout)
+
+        # Tensor-parallel transformer blocks
+        self.blocks = nn.ModuleList([
+            TensorParallelTransformerBlock(cfg, tp_size, tp_rank, tp_group)
+            for _ in block_indices
+        ])
+
+        # Last stage gets final norm + lm_head (replicated across TP ranks)
+        if is_last:
+            self.ln_f = nn.LayerNorm(cfg.hidden_dim)
+            self.lm_head = nn.Linear(cfg.hidden_dim, cfg.vocab_size, bias=False)
+            if is_first:
+                self.lm_head.weight = self.tok_emb.weight
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        from minicolossal.tensor_parallel import ColumnParallelLinear, RowParallelLinear
+        if isinstance(module, (nn.Linear, ColumnParallelLinear, RowParallelLinear)):
+            if hasattr(module, 'weight'):
+                nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if hasattr(module, 'bias') and module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def forward(self, x, input_ids=None):
+        """Same interface as PipelineStage.forward()."""
+        if self.is_first:
+            B, T = input_ids.shape
+            positions = torch.arange(0, T, device=input_ids.device).unsqueeze(0)
+            x = self.tok_emb(input_ids) + self.pos_emb(positions)
+            x = self.emb_dropout(x)
+
+        for block in self.blocks:
+            x = block(x)
+
+        if self.is_last:
+            x = self.ln_f(x)
+            x = self.lm_head(x)
+
+        return x
+
+
+# ============================================================================
 # Helper: create pipeline stages from config
 # ============================================================================
+
+def create_tp_pipeline_stage(cfg, num_stages, stage_id, tp_size, tp_rank,
+                             tp_group, device):
+    """
+    Create a tensor-parallel pipeline stage for true 3D parallelism.
+    Each stage's transformer blocks are TP-sharded.
+    """
+    blocks_per_stage = cfg.n_layers // num_stages
+    remainder = cfg.n_layers % num_stages
+
+    stage_sizes = []
+    for s in range(num_stages):
+        size = blocks_per_stage + (1 if s < remainder else 0)
+        stage_sizes.append(size)
+
+    start = sum(stage_sizes[:stage_id])
+    end = start + stage_sizes[stage_id]
+    block_indices = list(range(start, end))
+
+    is_first = (stage_id == 0)
+    is_last = (stage_id == num_stages - 1)
+
+    stage = TensorParallelPipelineStage(
+        cfg, block_indices, is_first, is_last,
+        tp_size, tp_rank, tp_group
+    ).to(device)
+    return stage
+
 
 def create_pipeline_stage(cfg, num_stages, stage_id, device):
     """

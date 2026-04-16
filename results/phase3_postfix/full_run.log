@@ -1,0 +1,715 @@
+=============================================
+  Phase 3 Post-Bugfix: True 3D Experiments
+  Results → /home/ubuntu/workspace/mini-colossal-ai/results/phase3_postfix
+=============================================
+
+===== GROUP B: True 3D — Good Placement (GPT-2 Medium) =====
+
+>>> [B1_3d_good_gpt2med_bs8] Starting...
+>>> Command: bash /home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh --tp_size 2 --pp_size 2 --zero_stage 0 --num_steps 20 --model medium --batch_size 8
+=== Phase 3 Benchmark: 2 NODES × 4 GPUs (8 total) ===
+  Master: 10.0.3.199  Worker: 10.0.3.146
+  Args: --tp_size 2 --pp_size 2 --zero_stage 0 --num_steps 20 --model medium --batch_size 8
+/home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh: line 62: 16148 Killed                  ssh -o StrictHostKeyChecking=no -i $PEM ubuntu@$WORKER "pkill -9 -f bench_unified 2>/dev/null"
+  Network interface: ens5
+Starting worker (node_rank=1) on 10.0.3.146
+Starting master (node_rank=0)
+W0416 15:20:47.685169 139629965772608 torch/distributed/run.py:779] 
+W0416 15:20:47.685169 139629965772608 torch/distributed/run.py:779] *****************************************
+W0416 15:20:47.685169 139629965772608 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0416 15:20:47.685169 139629965772608 torch/distributed/run.py:779] *****************************************
+  [Rank 0] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=0
+  [Rank 3] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=1
+  [Rank 1] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=1
+  [Rank 2] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=0
+
+  MiniColossal Unified Benchmark: DP(2) x PP(2) x TP(2)
+  World size: 8
+  DP=2  PP=2  TP=2  ZeRO=0
+  Model: GPT-2 Medium (24L)
+  Batch size: 8  Steps: 20
+  Params per GPU: 127.3M
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+
+  Training for 20 steps...
+
+  [Rank 3] Step 10/20  mem=2.57GB
+  [Rank 2] Step 10/20  mem=2.57GB
+  [Rank 1] Step 10/20  mem=2.57GB
+  [Rank 0] Step 10/20  mem=2.57GB
+  [Rank 3] Step 20/20  mem=2.57GB
+  [Rank 2] Step 20/20  mem=2.57GB
+  [Rank 1] Step 20/20  mem=2.57GB  [Rank 0] Step 20/20  mem=2.57GB
+
+
+============================================================
+  RESULTS: DP(2) x PP(2) x TP(2)
+============================================================
+  Steps:              20
+  Total time:         16.9s
+  Aggregate throughput: 4851 tokens/s
+  Microbatches:       8
+  Theoretical bubble: 11.1%
+  ---
+  [Rank 0] throughput=2425 tok/s  peak_mem=2.57GB  time=16.9s
+  [Rank 1] throughput=2425 tok/s  peak_mem=2.57GB  time=16.9s
+  [Rank 2] throughput=2425 tok/s  peak_mem=2.57GB  time=16.9s
+  [Rank 3] throughput=2425 tok/s  peak_mem=2.57GB  time=16.9s
+  [Rank 4] throughput=2430 tok/s  peak_mem=2.56GB  time=16.9s
+  [Rank 5] throughput=2430 tok/s  peak_mem=2.56GB  time=16.9s
+  [Rank 6] throughput=2430 tok/s  peak_mem=2.56GB  time=16.9s
+  [Rank 7] throughput=2430 tok/s  peak_mem=2.56GB  time=16.9s
+============================================================
+
+[worker] W0416 15:20:44.965490 139960814282560 torch/distributed/run.py:779] 
+[worker] W0416 15:20:44.965490 139960814282560 torch/distributed/run.py:779] *****************************************
+[worker] W0416 15:20:44.965490 139960814282560 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+[worker] W0416 15:20:44.965490 139960814282560 torch/distributed/run.py:779] *****************************************
+[worker]   [Rank 4] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=0
+[worker]   [Rank 7] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=1
+[worker]   [Rank 5] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=1
+[worker]   [Rank 6] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=0
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [Rank 6] Step 10/20  loss=8.2246  mem=2.56GB
+[worker]   [Rank 7] Step 10/20  loss=8.2246  mem=2.56GB
+[worker]   [Rank 4] Step 10/20  loss=7.9755  mem=2.56GB
+[worker]   [Rank 5] Step 10/20  loss=7.9755  mem=2.56GB
+[worker]   [Rank 6] Step 20/20  loss=7.8064  mem=2.56GB
+[worker]   [Rank 7] Step 20/20  loss=7.8064  mem=2.56GB
+[worker]   [Rank 5] Step 20/20  loss=7.6264  mem=2.56GB
+[worker]   [Rank 4] Step 20/20  loss=7.6264  mem=2.56GB
+=== Done ===
+>>> [B1_3d_good_gpt2med_bs8] Done. Saved to /home/ubuntu/workspace/mini-colossal-ai/results/phase3_postfix/B1_3d_good_gpt2med_bs8.txt
+
+
+>>> [B2_3d_good_gpt2med_bs16] Starting...
+>>> Command: bash /home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh --tp_size 2 --pp_size 2 --zero_stage 0 --num_steps 20 --model medium --batch_size 16
+=== Phase 3 Benchmark: 2 NODES × 4 GPUs (8 total) ===
+  Master: 10.0.3.199  Worker: 10.0.3.146
+  Args: --tp_size 2 --pp_size 2 --zero_stage 0 --num_steps 20 --model medium --batch_size 16
+/home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh: line 62: 16977 Killed                  ssh -o StrictHostKeyChecking=no -i $PEM ubuntu@$WORKER "pkill -9 -f bench_unified 2>/dev/null"
+  Network interface: ens5
+Starting worker (node_rank=1) on 10.0.3.146
+Starting master (node_rank=0)
+W0416 15:21:35.414194 140387526215488 torch/distributed/run.py:779] 
+W0416 15:21:35.414194 140387526215488 torch/distributed/run.py:779] *****************************************
+W0416 15:21:35.414194 140387526215488 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0416 15:21:35.414194 140387526215488 torch/distributed/run.py:779] *****************************************
+  [Rank 0] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=0
+  [Rank 3] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=1
+  [Rank 1] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=1
+  [Rank 2] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=0
+
+  MiniColossal Unified Benchmark: DP(2) x PP(2) x TP(2)
+  World size: 8
+  DP=2  PP=2  TP=2  ZeRO=0
+  Model: GPT-2 Medium (24L)
+  Batch size: 16  Steps: 20
+  Params per GPU: 127.3M
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+
+  Training for 20 steps...
+
+  [Rank 1] Step 10/20  mem=2.88GB
+  [Rank 0] Step 10/20  mem=2.88GB
+  [Rank 3] Step 10/20  mem=2.88GB
+  [Rank 2] Step 10/20  mem=2.88GB
+  [Rank 3] Step 20/20  mem=2.88GB
+  [Rank 2] Step 20/20  mem=2.88GB
+  [Rank 1] Step 20/20  mem=2.89GB
+  [Rank 0] Step 20/20  mem=2.89GB
+
+============================================================
+  RESULTS: DP(2) x PP(2) x TP(2)
+============================================================
+  Steps:              20
+  Total time:         27.3s
+  Aggregate throughput: 6012 tokens/s
+  Microbatches:       8
+  Theoretical bubble: 11.1%
+  ---
+  [Rank 0] throughput=3006 tok/s  peak_mem=2.89GB  time=27.3s
+  [Rank 1] throughput=3006 tok/s  peak_mem=2.89GB  time=27.3s
+  [Rank 2] throughput=3006 tok/s  peak_mem=2.88GB  time=27.3s
+  [Rank 3] throughput=3006 tok/s  peak_mem=2.88GB  time=27.3s
+  [Rank 4] throughput=3013 tok/s  peak_mem=2.87GB  time=27.2s
+  [Rank 5] throughput=3013 tok/s  peak_mem=2.87GB  time=27.2s
+  [Rank 6] throughput=3013 tok/s  peak_mem=2.86GB  time=27.2s
+  [Rank 7] throughput=3013 tok/s  peak_mem=2.86GB  time=27.2s
+============================================================
+
+[worker] W0416 15:21:32.613776 140180987754304 torch/distributed/run.py:779] 
+[worker] W0416 15:21:32.613776 140180987754304 torch/distributed/run.py:779] *****************************************
+[worker] W0416 15:21:32.613776 140180987754304 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+[worker] W0416 15:21:32.613776 140180987754304 torch/distributed/run.py:779] *****************************************
+[worker]   [Rank 4] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=0
+[worker]   [Rank 6] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=0
+[worker]   [Rank 5] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=1
+[worker]   [Rank 7] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=1
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [Rank 5] Step 10/20  loss=7.9150  mem=2.87GB
+[worker]   [Rank 4] Step 10/20  loss=7.9151  mem=2.87GB
+[worker]   [Rank 7] Step 10/20  loss=7.9893  mem=2.86GB
+[worker]   [Rank 6] Step 10/20  loss=7.9894  mem=2.86GB
+[worker]   [Rank 7] Step 20/20  loss=7.6287  mem=2.86GB
+[worker]   [Rank 6] Step 20/20  loss=7.6287  mem=2.86GB
+[worker]   [Rank 4] Step 20/20  loss=7.6136  mem=2.87GB
+[worker]   [Rank 5] Step 20/20  loss=7.6136  mem=2.87GB
+=== Done ===
+>>> [B2_3d_good_gpt2med_bs16] Done. Saved to /home/ubuntu/workspace/mini-colossal-ai/results/phase3_postfix/B2_3d_good_gpt2med_bs16.txt
+
+
+===== GROUP C: True 3D — Bad Placement (GPT-2 Medium) =====
+
+>>> [C1_3d_bad_gpt2med_bs8] Starting...
+>>> Command: bash /home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3_bad_placement.sh --tp_size 2 --pp_size 2 --zero_stage 0 --num_steps 20 --model medium --batch_size 8
+=== Phase 3 BAD Placement: TP forced INTER-node ===
+  Adding --bad_placement flag to launch_phase3.sh
+=== Phase 3 Benchmark: 2 NODES × 4 GPUs (8 total) ===
+  Master: 10.0.3.199  Worker: 10.0.3.146
+  Args: --tp_size 2 --pp_size 2 --zero_stage 0 --num_steps 20 --model medium --batch_size 8 --bad_placement
+/home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh: line 62: 17848 Killed                  ssh -o StrictHostKeyChecking=no -i $PEM ubuntu@$WORKER "pkill -9 -f bench_unified 2>/dev/null"
+  Network interface: ens5
+Starting worker (node_rank=1) on 10.0.3.146
+Starting master (node_rank=0)
+W0416 15:22:28.790003 140509537380160 torch/distributed/run.py:779] 
+W0416 15:22:28.790003 140509537380160 torch/distributed/run.py:779] *****************************************
+W0416 15:22:28.790003 140509537380160 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0416 15:22:28.790003 140509537380160 torch/distributed/run.py:779] *****************************************
+  [Rank 0] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=0
+  [Rank 1] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=1
+  [Rank 2] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=1  tp_rank=0
+  [Rank 3] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=1  tp_rank=1
+
+  MiniColossal Unified Benchmark: DP(2) x PP(2) x TP(2)
+  World size: 8
+  DP=2  PP=2  TP=2  ZeRO=0
+  Model: GPT-2 Medium (24L)
+  Batch size: 8  Steps: 20
+  Params per GPU: 127.3M
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+
+  Training for 20 steps...
+
+  [Rank 1] Step 10/20  mem=2.57GB
+  [Rank 0] Step 10/20  mem=2.57GB
+  [Rank 2] Step 10/20  loss=7.9390  mem=2.56GB
+  [Rank 3] Step 10/20  loss=7.9390  mem=2.56GB
+  [Rank 0] Step 20/20  mem=2.57GB  [Rank 1] Step 20/20  mem=2.57GB
+
+  [Rank 2] Step 20/20  loss=7.5970  mem=2.56GB
+  [Rank 3] Step 20/20  loss=7.5970  mem=2.56GB
+
+============================================================
+  RESULTS: DP(2) x PP(2) x TP(2)
+============================================================
+  Steps:              20
+  Total time:         19.9s
+  Aggregate throughput: 4126 tokens/s
+  Microbatches:       8
+  Theoretical bubble: 11.1%
+  ---
+  [Rank 0] throughput=2063 tok/s  peak_mem=2.57GB  time=19.9s
+  [Rank 1] throughput=2063 tok/s  peak_mem=2.57GB  time=19.9s
+  [Rank 2] throughput=2067 tok/s  peak_mem=2.56GB  time=19.8s
+  [Rank 3] throughput=2067 tok/s  peak_mem=2.56GB  time=19.8s
+  [Rank 4] throughput=2063 tok/s  peak_mem=2.57GB  time=19.9s
+  [Rank 5] throughput=2063 tok/s  peak_mem=2.57GB  time=19.9s
+  [Rank 6] throughput=2067 tok/s  peak_mem=2.56GB  time=19.8s
+  [Rank 7] throughput=2067 tok/s  peak_mem=2.56GB  time=19.8s
+============================================================
+
+[worker] W0416 15:22:25.987158 140404381718336 torch/distributed/run.py:779] 
+[worker] W0416 15:22:25.987158 140404381718336 torch/distributed/run.py:779] *****************************************
+[worker] W0416 15:22:25.987158 140404381718336 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+[worker] W0416 15:22:25.987158 140404381718336 torch/distributed/run.py:779] *****************************************
+[worker]   [Rank 4] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=0  tp_rank=0
+[worker]   [Rank 5] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=0  tp_rank=1
+[worker]   [Rank 7] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=1
+[worker]   [Rank 6] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=0
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [Rank 5] Step 10/20  mem=2.57GB
+[worker]   [Rank 4] Step 10/20  mem=2.57GB
+[worker]   [Rank 7] Step 10/20  loss=8.2192  mem=2.56GB
+[worker]   [Rank 6] Step 10/20  loss=8.2192  mem=2.56GB
+[worker]   [Rank 5] Step 20/20  mem=2.57GB  [Rank 4] Step 20/20  mem=2.57GB
+[worker] 
+[worker]   [Rank 7] Step 20/20  loss=7.7996  mem=2.56GB
+[worker]   [Rank 6] Step 20/20  loss=7.7996  mem=2.56GB
+=== Done ===
+>>> [C1_3d_bad_gpt2med_bs8] Done. Saved to /home/ubuntu/workspace/mini-colossal-ai/results/phase3_postfix/C1_3d_bad_gpt2med_bs8.txt
+
+
+===== GROUP D: True 3D — TP Inter-node (GPT-2 Medium) =====
+
+>>> [D1_3d_worst_gpt2med_bs8] Starting...
+>>> Command: bash /home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh --tp_size 2 --pp_size 2 --zero_stage 0 --num_steps 20 --model medium --batch_size 8 --worst_placement
+=== Phase 3 Benchmark: 2 NODES × 4 GPUs (8 total) ===
+  Master: 10.0.3.199  Worker: 10.0.3.146
+  Args: --tp_size 2 --pp_size 2 --zero_stage 0 --num_steps 20 --model medium --batch_size 8 --worst_placement
+/home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh: line 62: 18590 Killed                  ssh -o StrictHostKeyChecking=no -i $PEM ubuntu@$WORKER "pkill -9 -f bench_unified 2>/dev/null"
+  Network interface: ens5
+Starting worker (node_rank=1) on 10.0.3.146
+Starting master (node_rank=0)
+W0416 15:23:14.872331 140035896792896 torch/distributed/run.py:779] 
+W0416 15:23:14.872331 140035896792896 torch/distributed/run.py:779] *****************************************
+W0416 15:23:14.872331 140035896792896 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0416 15:23:14.872331 140035896792896 torch/distributed/run.py:779] *****************************************
+  [Rank 0] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=0
+  [Rank 1] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=0
+  [Rank 3] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=1  tp_rank=0  [Rank 2] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=1  tp_rank=0
+
+
+  MiniColossal Unified Benchmark: DP(2) x PP(2) x TP(2)
+  World size: 8
+  DP=2  PP=2  TP=2  ZeRO=0
+  Model: GPT-2 Medium (24L)
+  Batch size: 8  Steps: 20
+  Params per GPU: 127.3M
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+
+  Training for 20 steps...
+
+  [Rank 0] Step 10/20  mem=2.57GB
+  [Rank 1] Step 10/20  mem=2.57GB
+  [Rank 2] Step 10/20  loss=7.9734  mem=2.56GB
+  [Rank 3] Step 10/20  loss=8.2603  mem=2.56GB
+  [Rank 0] Step 20/20  mem=2.57GB
+  [Rank 1] Step 20/20  mem=2.57GB
+  [Rank 2] Step 20/20  loss=7.6039  mem=2.56GB
+  [Rank 3] Step 20/20  loss=7.8144  mem=2.56GB
+
+============================================================
+  RESULTS: DP(2) x PP(2) x TP(2)
+============================================================
+  Steps:              20
+  Total time:         21.7s
+  Aggregate throughput: 3776 tokens/s
+  Microbatches:       8
+  Theoretical bubble: 11.1%
+  ---
+  [Rank 0] throughput=1888 tok/s  peak_mem=2.57GB  time=21.7s
+  [Rank 1] throughput=1888 tok/s  peak_mem=2.57GB  time=21.7s
+  [Rank 2] throughput=1893 tok/s  peak_mem=2.56GB  time=21.6s
+  [Rank 3] throughput=1893 tok/s  peak_mem=2.56GB  time=21.6s
+  [Rank 4] throughput=1888 tok/s  peak_mem=2.57GB  time=21.7s
+  [Rank 5] throughput=1888 tok/s  peak_mem=2.57GB  time=21.7s
+  [Rank 6] throughput=1893 tok/s  peak_mem=2.56GB  time=21.6s
+  [Rank 7] throughput=1893 tok/s  peak_mem=2.56GB  time=21.6s
+============================================================
+
+[worker] W0416 15:23:12.080279 140610843338560 torch/distributed/run.py:779] 
+[worker] W0416 15:23:12.080279 140610843338560 torch/distributed/run.py:779] *****************************************
+[worker] W0416 15:23:12.080279 140610843338560 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+[worker] W0416 15:23:12.080279 140610843338560 torch/distributed/run.py:779] *****************************************
+[worker]   [Rank 4] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=0  tp_rank=1
+[worker]   [Rank 6] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=1
+[worker]   [Rank 5] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=0  tp_rank=1
+[worker]   [Rank 7] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=1
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [Rank 4] Step 10/20  mem=2.57GB
+[worker]   [Rank 5] Step 10/20  mem=2.57GB
+[worker]   [Rank 6] Step 10/20  loss=7.9733  mem=2.56GB
+[worker]   [Rank 7] Step 10/20  loss=8.2602  mem=2.56GB
+[worker]   [Rank 4] Step 20/20  mem=2.57GB
+[worker]   [Rank 5] Step 20/20  mem=2.57GB
+[worker]   [Rank 6] Step 20/20  loss=7.6039  mem=2.56GB
+[worker]   [Rank 7] Step 20/20  loss=7.8145  mem=2.56GB
+=== Done ===
+>>> [D1_3d_worst_gpt2med_bs8] Done. Saved to /home/ubuntu/workspace/mini-colossal-ai/results/phase3_postfix/D1_3d_worst_gpt2med_bs8.txt
+
+
+===== GROUP E: Architecture Comparison (True 3D, Good Placement) =====
+
+>>> [E1_3d_good_gpt2small] Starting...
+>>> Command: bash /home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh --tp_size 2 --pp_size 2 --zero_stage 0 --num_steps 20 --model small --batch_size 8
+=== Phase 3 Benchmark: 2 NODES × 4 GPUs (8 total) ===
+  Master: 10.0.3.199  Worker: 10.0.3.146
+  Args: --tp_size 2 --pp_size 2 --zero_stage 0 --num_steps 20 --model small --batch_size 8
+/home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh: line 62: 19352 Killed                  ssh -o StrictHostKeyChecking=no -i $PEM ubuntu@$WORKER "pkill -9 -f bench_unified 2>/dev/null"
+  Network interface: ens5
+Starting worker (node_rank=1) on 10.0.3.146
+Starting master (node_rank=0)
+W0416 15:24:02.647944 140122993104704 torch/distributed/run.py:779] 
+W0416 15:24:02.647944 140122993104704 torch/distributed/run.py:779] *****************************************
+W0416 15:24:02.647944 140122993104704 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0416 15:24:02.647944 140122993104704 torch/distributed/run.py:779] *****************************************
+  [Rank 0] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=0
+  [Rank 3] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=1
+  [Rank 2] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=0
+  [Rank 1] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=1
+
+  MiniColossal Unified Benchmark: DP(2) x PP(2) x TP(2)
+  World size: 8
+  DP=2  PP=2  TP=2  ZeRO=0
+  Model: GPT-2 Small (12L)
+  Batch size: 8  Steps: 20
+  Params per GPU: 60.1M
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+
+  Training for 20 steps...
+
+  [Rank 2] Step 10/20  mem=1.24GB
+  [Rank 3] Step 10/20  mem=1.24GB
+  [Rank 1] Step 10/20  mem=1.24GB
+  [Rank 0] Step 10/20  mem=1.24GB
+  [Rank 3] Step 20/20  mem=1.24GB
+  [Rank 2] Step 20/20  mem=1.24GB
+  [Rank 1] Step 20/20  mem=1.24GB
+  [Rank 0] Step 20/20  mem=1.24GB
+
+============================================================
+  RESULTS: DP(2) x PP(2) x TP(2)
+============================================================
+  Steps:              20
+  Total time:         8.0s
+  Aggregate throughput: 10297 tokens/s
+  Microbatches:       8
+  Theoretical bubble: 11.1%
+  ---
+  [Rank 0] throughput=5149 tok/s  peak_mem=1.24GB  time=8.0s
+  [Rank 1] throughput=5149 tok/s  peak_mem=1.24GB  time=8.0s
+  [Rank 2] throughput=5149 tok/s  peak_mem=1.24GB  time=8.0s
+  [Rank 3] throughput=5149 tok/s  peak_mem=1.24GB  time=8.0s
+  [Rank 4] throughput=5159 tok/s  peak_mem=1.32GB  time=7.9s
+  [Rank 5] throughput=5158 tok/s  peak_mem=1.32GB  time=7.9s
+  [Rank 6] throughput=5159 tok/s  peak_mem=1.32GB  time=7.9s
+  [Rank 7] throughput=5158 tok/s  peak_mem=1.32GB  time=7.9s
+============================================================
+
+[worker] W0416 15:23:59.846764 140048450905920 torch/distributed/run.py:779] 
+[worker] W0416 15:23:59.846764 140048450905920 torch/distributed/run.py:779] *****************************************
+[worker] W0416 15:23:59.846764 140048450905920 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+[worker] W0416 15:23:59.846764 140048450905920 torch/distributed/run.py:779] *****************************************
+[worker]   [Rank 4] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=0
+[worker]   [Rank 7] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=1
+[worker]   [Rank 5] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=1
+[worker]   [Rank 6] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=0
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [Rank 6] Step 10/20  loss=8.5848  mem=1.32GB  [Rank 7] Step 10/20  loss=8.5847  mem=1.32GB
+[worker] 
+[worker]   [Rank 5] Step 10/20  loss=8.3705  mem=1.32GB
+[worker]   [Rank 4] Step 10/20  loss=8.3706  mem=1.32GB
+[worker]   [Rank 7] Step 20/20  loss=7.6150  mem=1.32GB
+[worker]   [Rank 6] Step 20/20  loss=7.6150  mem=1.32GB
+[worker]   [Rank 4] Step 20/20  loss=7.4380  mem=1.32GB
+[worker]   [Rank 5] Step 20/20  loss=7.4380  mem=1.32GB
+=== Done ===
+>>> [E1_3d_good_gpt2small] Done. Saved to /home/ubuntu/workspace/mini-colossal-ai/results/phase3_postfix/E1_3d_good_gpt2small.txt
+
+
+>>> [E2_3d_good_gpt2med] Starting...
+>>> Command: bash /home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh --tp_size 2 --pp_size 2 --zero_stage 0 --num_steps 20 --model medium --batch_size 8
+=== Phase 3 Benchmark: 2 NODES × 4 GPUs (8 total) ===
+  Master: 10.0.3.199  Worker: 10.0.3.146
+  Args: --tp_size 2 --pp_size 2 --zero_stage 0 --num_steps 20 --model medium --batch_size 8
+/home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh: line 62: 19967 Killed                  ssh -o StrictHostKeyChecking=no -i $PEM ubuntu@$WORKER "pkill -9 -f bench_unified 2>/dev/null"
+  Network interface: ens5
+Starting worker (node_rank=1) on 10.0.3.146
+Starting master (node_rank=0)
+W0416 15:24:35.860059 140276069672768 torch/distributed/run.py:779] 
+W0416 15:24:35.860059 140276069672768 torch/distributed/run.py:779] *****************************************
+W0416 15:24:35.860059 140276069672768 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0416 15:24:35.860059 140276069672768 torch/distributed/run.py:779] *****************************************
+  [Rank 0] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=0
+  [Rank 2] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=0
+  [Rank 1] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=1
+  [Rank 3] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=1
+
+  MiniColossal Unified Benchmark: DP(2) x PP(2) x TP(2)
+  World size: 8
+  DP=2  PP=2  TP=2  ZeRO=0
+  Model: GPT-2 Medium (24L)
+  Batch size: 8  Steps: 20
+  Params per GPU: 127.3M
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+
+  Training for 20 steps...
+
+  [Rank 1] Step 10/20  mem=2.57GB
+  [Rank 0] Step 10/20  mem=2.57GB
+  [Rank 2] Step 10/20  mem=2.57GB
+  [Rank 3] Step 10/20  mem=2.57GB
+  [Rank 2] Step 20/20  mem=2.57GB
+  [Rank 1] Step 20/20  mem=2.57GB
+  [Rank 0] Step 20/20  mem=2.57GB
+  [Rank 3] Step 20/20  mem=2.57GB
+
+============================================================
+  RESULTS: DP(2) x PP(2) x TP(2)
+============================================================
+  Steps:              20
+  Total time:         16.3s
+  Aggregate throughput: 5014 tokens/s
+  Microbatches:       8
+  Theoretical bubble: 11.1%
+  ---
+  [Rank 0] throughput=2507 tok/s  peak_mem=2.57GB  time=16.3s
+  [Rank 1] throughput=2507 tok/s  peak_mem=2.57GB  time=16.3s
+  [Rank 2] throughput=2507 tok/s  peak_mem=2.57GB  time=16.3s
+  [Rank 3] throughput=2507 tok/s  peak_mem=2.57GB  time=16.3s
+  [Rank 4] throughput=2512 tok/s  peak_mem=2.56GB  time=16.3s
+  [Rank 5] throughput=2512 tok/s  peak_mem=2.56GB  time=16.3s
+  [Rank 6] throughput=2512 tok/s  peak_mem=2.56GB  time=16.3s
+  [Rank 7] throughput=2512 tok/s  peak_mem=2.56GB  time=16.3s
+============================================================
+
+[worker] W0416 15:24:33.056294 139941097846592 torch/distributed/run.py:779] 
+[worker] W0416 15:24:33.056294 139941097846592 torch/distributed/run.py:779] *****************************************
+[worker] W0416 15:24:33.056294 139941097846592 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+[worker] W0416 15:24:33.056294 139941097846592 torch/distributed/run.py:779] *****************************************
+[worker]   [Rank 4] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=0
+[worker]   [Rank 6] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=0
+[worker]   [Rank 5] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=1
+[worker]   [Rank 7] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=1
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [Rank 4] Step 10/20  loss=7.9779  mem=2.56GB
+[worker]   [Rank 5] Step 10/20  loss=7.9779  mem=2.56GB
+[worker]   [Rank 7] Step 10/20  loss=8.2440  mem=2.56GB
+[worker]   [Rank 6] Step 10/20  loss=8.2440  mem=2.56GB
+[worker]   [Rank 7] Step 20/20  loss=7.7993  mem=2.56GB
+[worker]   [Rank 6] Step 20/20  loss=7.7993  mem=2.56GB
+[worker]   [Rank 5] Step 20/20  loss=7.5950  mem=2.56GB
+[worker]   [Rank 4] Step 20/20  loss=7.5950  mem=2.56GB
+=== Done ===
+>>> [E2_3d_good_gpt2med] Done. Saved to /home/ubuntu/workspace/mini-colossal-ai/results/phase3_postfix/E2_3d_good_gpt2med.txt
+
+
+>>> [E3_3d_good_t5base] Starting...
+>>> Command: bash /home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh --tp_size 2 --pp_size 2 --zero_stage 0 --num_steps 20 --model t5_base --batch_size 8
+=== Phase 3 Benchmark: 2 NODES × 4 GPUs (8 total) ===
+  Master: 10.0.3.199  Worker: 10.0.3.146
+  Args: --tp_size 2 --pp_size 2 --zero_stage 0 --num_steps 20 --model t5_base --batch_size 8
+/home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh: line 62: 20679 Killed                  ssh -o StrictHostKeyChecking=no -i $PEM ubuntu@$WORKER "pkill -9 -f bench_unified 2>/dev/null"
+  Network interface: ens5
+Starting worker (node_rank=1) on 10.0.3.146
+Starting master (node_rank=0)
+W0416 15:25:18.290102 140076269020992 torch/distributed/run.py:779] 
+W0416 15:25:18.290102 140076269020992 torch/distributed/run.py:779] *****************************************
+W0416 15:25:18.290102 140076269020992 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0416 15:25:18.290102 140076269020992 torch/distributed/run.py:779] *****************************************
+  [Rank 0] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=0
+  [Rank 2] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=0
+  [Rank 1] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=1
+  [Rank 3] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=1
+
+  MiniColossal Unified Benchmark: DP(2) x PP(2) x TP(2)
+  World size: 8
+  DP=2  PP=2  TP=2  ZeRO=0
+  Model: T5-base (24L)
+  Batch size: 8  Steps: 20
+  Params per GPU: 81.4M
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+
+  Training for 20 steps...
+
+  [Rank 1] Step 10/20  mem=1.69GB
+  [Rank 0] Step 10/20  mem=1.69GB
+  [Rank 2] Step 10/20  mem=1.69GB
+  [Rank 3] Step 10/20  mem=1.69GB
+  [Rank 1] Step 20/20  mem=1.69GB  [Rank 0] Step 20/20  mem=1.69GB
+
+  [Rank 2] Step 20/20  mem=1.69GB
+  [Rank 3] Step 20/20  mem=1.69GB
+
+============================================================
+  RESULTS: DP(2) x PP(2) x TP(2)
+============================================================
+  Steps:              20
+  Total time:         13.7s
+  Aggregate throughput: 5973 tokens/s
+  Microbatches:       8
+  Theoretical bubble: 11.1%
+  ---
+  [Rank 0] throughput=3000 tok/s  peak_mem=1.69GB  time=13.7s
+  [Rank 1] throughput=3000 tok/s  peak_mem=1.69GB  time=13.7s
+  [Rank 2] throughput=3000 tok/s  peak_mem=1.69GB  time=13.7s
+  [Rank 3] throughput=3000 tok/s  peak_mem=1.69GB  time=13.7s
+  [Rank 4] throughput=2986 tok/s  peak_mem=2.75GB  time=13.7s
+  [Rank 5] throughput=2986 tok/s  peak_mem=2.75GB  time=13.7s
+  [Rank 6] throughput=2986 tok/s  peak_mem=2.75GB  time=13.7s
+  [Rank 7] throughput=2986 tok/s  peak_mem=2.75GB  time=13.7s
+============================================================
+
+[worker] W0416 15:25:15.487265 140563456456512 torch/distributed/run.py:779] 
+[worker] W0416 15:25:15.487265 140563456456512 torch/distributed/run.py:779] *****************************************
+[worker] W0416 15:25:15.487265 140563456456512 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+[worker] W0416 15:25:15.487265 140563456456512 torch/distributed/run.py:779] *****************************************
+[worker]   [Rank 4] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=0
+[worker]   [Rank 5] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=1
+[worker]   [Rank 7] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=1
+[worker]   [Rank 6] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=0
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [Rank 5] Step 10/20  loss=8.3978  mem=2.75GB
+[worker]   [Rank 4] Step 10/20  loss=8.3976  mem=2.75GB
+[worker]   [Rank 6] Step 10/20  loss=8.6979  mem=2.75GB
+[worker]   [Rank 7] Step 10/20  loss=8.6981  mem=2.75GB
+[worker]   [Rank 5] Step 20/20  loss=7.6454  mem=2.75GB
+[worker]   [Rank 4] Step 20/20  loss=7.6454  mem=2.75GB
+[worker]   [Rank 6] Step 20/20  loss=7.6189  mem=2.75GB
+[worker]   [Rank 7] Step 20/20  loss=7.6189  mem=2.75GB
+=== Done ===
+>>> [E3_3d_good_t5base] Done. Saved to /home/ubuntu/workspace/mini-colossal-ai/results/phase3_postfix/E3_3d_good_t5base.txt
+
+
+===== GROUP F: True 3D + ZeRO-1 (GPT-2 Medium) =====
+
+>>> [F1_3d_good_gpt2med_zero1] Starting...
+>>> Command: bash /home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh --tp_size 2 --pp_size 2 --zero_stage 1 --num_steps 20 --model medium --batch_size 8
+=== Phase 3 Benchmark: 2 NODES × 4 GPUs (8 total) ===
+  Master: 10.0.3.199  Worker: 10.0.3.146
+  Args: --tp_size 2 --pp_size 2 --zero_stage 1 --num_steps 20 --model medium --batch_size 8
+/home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh: line 62: 21343 Killed                  ssh -o StrictHostKeyChecking=no -i $PEM ubuntu@$WORKER "pkill -9 -f bench_unified 2>/dev/null"
+  Network interface: ens5
+Starting worker (node_rank=1) on 10.0.3.146
+Starting master (node_rank=0)
+W0416 15:25:58.515813 140534458439488 torch/distributed/run.py:779] 
+W0416 15:25:58.515813 140534458439488 torch/distributed/run.py:779] *****************************************
+W0416 15:25:58.515813 140534458439488 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0416 15:25:58.515813 140534458439488 torch/distributed/run.py:779] *****************************************
+  [Rank 0] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=0
+  [Rank 1] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=1
+  [Rank 3] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=1
+  [Rank 2] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=0
+
+  MiniColossal Unified Benchmark: DP(2) x PP(2) x TP(2) x ZeRO-1
+  World size: 8
+  DP=2  PP=2  TP=2  ZeRO=1
+  Model: GPT-2 Medium (24L)
+  Batch size: 8  Steps: 20
+  [ZeRO-1] Total params: 127,339,520
+  [ZeRO-1] Partition size: 63,669,760
+  [ZeRO-1] This GPU stores optimizer states for 63,669,760 params
+  [ZeRO-1] Optimizer memory: 0.509 GB (vs 1.019 GB standard, 2.0x saving)
+  [ZeRO-1] Total params: 127,339,520
+  [ZeRO-1] Partition size: 63,669,760
+  [ZeRO-1] This GPU stores optimizer states for 63,669,760 params
+  [ZeRO-1] Optimizer memory: 0.509 GB (vs 1.019 GB standard, 2.0x saving)
+  Params per GPU: 127.3M
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+
+  Training for 20 steps...
+
+  [Rank 1] Step 10/20  mem=3.61GB
+  [Rank 0] Step 10/20  mem=3.61GB
+  [Rank 3] Step 10/20  mem=3.59GB
+  [Rank 2] Step 10/20  mem=3.59GB
+  [Rank 1] Step 20/20  mem=3.61GB
+  [Rank 0] Step 20/20  mem=3.61GB
+  [Rank 3] Step 20/20  mem=3.59GB
+  [Rank 2] Step 20/20  mem=3.59GB
+
+============================================================
+  RESULTS: DP(2) x PP(2) x TP(2) x ZeRO-1
+============================================================
+  Steps:              20
+  Total time:         18.6s
+  Aggregate throughput: 4405 tokens/s
+  Microbatches:       8
+  Theoretical bubble: 11.1%
+  ZeRO-1:            2-way partitioned
+  ---
+  [Rank 0] throughput=2202 tok/s  peak_mem=3.61GB  time=18.6s
+  [Rank 1] throughput=2202 tok/s  peak_mem=3.61GB  time=18.6s
+  [Rank 2] throughput=2202 tok/s  peak_mem=3.59GB  time=18.6s
+  [Rank 3] throughput=2202 tok/s  peak_mem=3.59GB  time=18.6s
+  [Rank 4] throughput=2207 tok/s  peak_mem=3.58GB  time=18.6s
+  [Rank 5] throughput=2206 tok/s  peak_mem=3.58GB  time=18.6s
+  [Rank 6] throughput=2207 tok/s  peak_mem=4.19GB  time=18.6s
+  [Rank 7] throughput=2206 tok/s  peak_mem=4.19GB  time=18.6s
+============================================================
+
+[worker] W0416 15:25:55.701619 140185148725056 torch/distributed/run.py:779] 
+[worker] W0416 15:25:55.701619 140185148725056 torch/distributed/run.py:779] *****************************************
+[worker] W0416 15:25:55.701619 140185148725056 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+[worker] W0416 15:25:55.701619 140185148725056 torch/distributed/run.py:779] *****************************************
+[worker]   [Rank 4] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=0
+[worker]   [Rank 6] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=0
+[worker]   [Rank 7] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=1
+[worker]   [Rank 5] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=1
+[worker]   [ZeRO-1] Total params: 127,079,424
+[worker]   [ZeRO-1] Partition size: 63,539,712
+[worker]   [ZeRO-1] This GPU stores optimizer states for 63,539,712 params
+[worker]   [ZeRO-1] Optimizer memory: 0.508 GB (vs 1.017 GB standard, 2.0x saving)
+[worker]   [ZeRO-1] Total params: 127,079,424
+[worker]   [ZeRO-1] Partition size: 63,539,712
+[worker]   [ZeRO-1] This GPU stores optimizer states for 63,539,712 params
+[worker]   [ZeRO-1] Optimizer memory: 0.508 GB (vs 1.017 GB standard, 2.0x saving)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [Rank 7] Step 10/20  loss=8.2233  mem=4.19GB
+[worker]   [Rank 6] Step 10/20  loss=8.2233  mem=4.19GB
+[worker]   [Rank 4] Step 10/20  loss=7.9696  mem=3.58GB
+[worker]   [Rank 5] Step 10/20  loss=7.9696  mem=3.58GB
+[worker]   [Rank 7] Step 20/20  loss=7.8226  mem=4.19GB
+[worker]   [Rank 6] Step 20/20  loss=7.8226  mem=4.19GB
+[worker]   [Rank 5] Step 20/20  loss=7.6351  mem=3.58GB
+[worker]   [Rank 4] Step 20/20  loss=7.6351  mem=3.58GB
+=== Done ===
+>>> [F1_3d_good_gpt2med_zero1] Done. Saved to /home/ubuntu/workspace/mini-colossal-ai/results/phase3_postfix/F1_3d_good_gpt2med_zero1.txt
+
+
+=============================================
+  ALL POST-BUGFIX EXPERIMENTS COMPLETE
+  Results saved in: /home/ubuntu/workspace/mini-colossal-ai/results/phase3_postfix/
+=============================================
+total 128
+drwxr-xr-x 2 ubuntu ubuntu  4096 Apr 16 15:25 .
+drwxrwxr-x 4 ubuntu ubuntu  4096 Apr 16 15:12 ..
+-rw-rw-r-- 1 ubuntu ubuntu  4626 Apr 16 15:21 B1_3d_good_gpt2med_bs8.txt
+-rw-rw-r-- 1 ubuntu ubuntu  4628 Apr 16 15:22 B2_3d_good_gpt2med_bs16.txt
+-rw-rw-r-- 1 ubuntu ubuntu  4744 Apr 16 15:23 C1_3d_bad_gpt2med_bs8.txt
+-rw-rw-r-- 1 ubuntu ubuntu  4644 Apr 16 15:23 D1_3d_worst_gpt2med_bs8.txt
+-rw-rw-r-- 1 ubuntu ubuntu  4615 Apr 16 15:24 E1_3d_good_gpt2small.txt
+-rw-rw-r-- 1 ubuntu ubuntu  4626 Apr 16 15:25 E2_3d_good_gpt2med.txt
+-rw-rw-r-- 1 ubuntu ubuntu  4621 Apr 16 15:25 E3_3d_good_t5base.txt
+-rw-rw-r-- 1 ubuntu ubuntu  5615 Apr 16 15:26 F1_3d_good_gpt2med_zero1.txt
+-rw-r--r-- 1 ubuntu ubuntu  6023 Apr 16 15:07 POSTFIX_RESULTS_SUMMARY.txt
+-rw-rw-r-- 1 ubuntu ubuntu 41648 Apr 16 15:26 full_run.log

@@ -1,0 +1,227 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{Mini Colossal-AI --- Speaker Script}
+\lhead{\leftmark}
+\rfoot{Page \thepage}
+\setlength{\headheight}{14pt}
+
+\titleformat{\section}{\Large\bfseries\color{blue!70!black}}{}{0em}{}
+\titleformat{\subsection}{\large\bfseries}{}{0em}{}
+
+\title{Speaker Script\\[0.3em]\large Mini Colossal-AI: Distributed Parallelism from Scratch}
+\author{Dinesh Chand \and Goutham P \and Meena Chidambaram \and Nadhiya R S}
+\date{}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% ======================================================================
+\section{Nadhiya R S --- Problem Statement, Strategies \& Summary}
+% ======================================================================
+
+\subsection{Title Slide}
+\textit{[Title slide displayed. Nadhiya introduces the team.]}
+
+Hi everyone. We are Team Mini Colossal-AI. Our members are Dinesh, Goutham, Meena, and myself, Nadhiya --- all from MTech-AI at IISc. I will start with the problem statement, motivation, and the four parallelism strategies we built, then hand over to Goutham for the hybrid methodology, Meena and Dinesh will walk through the results, and I will wrap up with the summary.
+
+\subsection{Slide: Problem Statement \& Motivation ($\sim$1.5 min)}
+\textit{[Slide shows problem statement, what we did list.]}
+
+So, the core problem. Modern language models have hundreds of millions to billions of parameters. A single GPU simply cannot hold all the model weights, gradients, and optimizer states needed for training. You need to split the work across multiple GPUs.
+
+There are multiple ways to do that --- Data Parallelism, Tensor Parallelism, Pipeline Parallelism, and ZeRO optimizer sharding. Each has very different communication patterns and memory trade-offs. I will walk through each of them in the next slide.
+
+The question is: which strategy works best, and does it depend on the hardware you are running on? That is what we set out to study.
+
+What makes our project different is that we did not use any high-level framework. We implemented all four strategies from scratch using only low-level \texttt{torch.distributed} calls like send, recv, and all-reduce. We then composed them into hybrid configurations using a unified plugin, tested on two different cluster setups, and ran experiments on two model architectures --- GPT-2 which is decoder-only, and T5 which is encoder-decoder.
+
+The main finding, which we will show in detail, is that both the hardware topology and the model architecture significantly affect which strategy works best and how much speedup you actually get.
+
+\subsection{Slide: Four Parallelism Strategies ($\sim$50s)}
+\textit{[Slide shows the four strategies with communication table.]}
+
+Let me walk through what we actually built.
+
+First, Data Parallelism. Each GPU holds a full copy of the model and processes a different data shard. After the backward pass, we average gradients across all GPUs using all-reduce. Simple, but it means every GPU needs enough memory for the full model.
+
+Second, ZeRO optimizer sharding. This addresses the memory problem. In Stage 1, we partition the optimizer states --- things like Adam's momentum and variance vectors --- across GPUs. Each GPU only stores its own slice. Stage 2 goes further and also partitions the gradients. This can cut optimizer memory by a factor of N, where N is the number of GPUs.
+
+Third, Tensor Parallelism. We followed the Megatron-LM approach --- 1D column and row splits. The attention projections are split by columns, the output projection by rows. This requires two all-reduce operations per transformer block. For GPT-2 Medium with 24 blocks, that is 48 all-reduces per forward pass.
+
+Fourth, Pipeline Parallelism with the 1F1B schedule. We split the model's layers across stages and send activations between them. The 1F1B schedule interleaves forward and backward passes to keep stages busy, reducing idle time compared to a naive sequential schedule.
+
+Everything is implemented from scratch using just four primitives from \texttt{torch.distributed}.
+
+\textit{[Hand over to Goutham.]}
+
+I will now hand over to Goutham who will explain how we composed these into a hybrid system.
+
+% ======================================================================
+\section{Goutham P --- Methodology}
+% ======================================================================
+
+\subsection{Slide: Unified 3D Hybrid Plugin ($\sim$40s)}
+\textit{[Slide shows the 3D mesh diagram and plugin API.]}
+
+Thanks Nadhiya. The interesting part is composing these strategies. We wrote a single unified plugin that takes TP size, PP size, and ZeRO stage as arguments. It automatically computes the DP size as world size divided by TP times PP.
+
+The plugin creates what we call a 3D process group mesh. You can see it on the left --- each GPU sits at a point in a (2,2,2) grid with three axes. Each axis has size 2, so there are 4 groups of size 2 along every axis. Let me walk through what each group does.
+
+The blue horizontal arrows are TP groups: (0,1), (2,3), (4,5), and (6,7). Take GPU 0 and GPU 1 --- they sit in the same pipeline stage and same DP slice, but each holds half the weight matrix for every layer. They process the same input data and all-reduce their partial outputs so each one gets the full result.
+
+The red dashed vertical arrows are PP groups: (0,2), (1,3), (4,6), and (5,7). Take GPU 0 and GPU 2 --- GPU 0 holds layers 1 through 6, GPU 2 holds layers 7 through 12. GPU 0 runs forward and sends activations down to GPU 2, then GPU 2 runs backward and sends gradients back up. That is one pipeline.
+
+The green dotted arrows going between the two DP slices are DP groups: (0,4), (1,5), (2,6), and (3,7). Take GPU 0 and GPU 4 --- they hold the exact same model weights, same pipeline stage, same TP slice, but they process different mini-batches of data. After backward, they all-reduce their gradients so both copies stay in sync.
+
+Now here is the key thing: these 4 groups along each axis are completely independent. The 4 PP groups each run their own pipeline on their own data stream --- for example, the pipeline (0,2) handles different micro-batches than the pipeline (1,3). They never communicate with each other during training. Same for TP and DP groups --- each operates in isolation. A single GPU ties them together indirectly because it belongs to one group per axis. So GPU 0's TP result feeds into its PP pipeline (0,2), and after that pipeline finishes, its DP group (0,4) syncs the gradients with the other copy.
+
+The key design is that every standalone component already accepts a process group argument. So the plugin just creates these sub-groups and passes them in. There is no code duplication between standalone and hybrid modes.
+
+In Phase 2, with only 4 GPUs, we could activate two axes at a time. In Phase 3, with 8 GPUs, we can finally use all three axes simultaneously --- DP=2, PP=2, TP=2.
+
+Now, an important question is: when we have multiple nodes with different link speeds, how do we control which axis ends up on which link? That is what the next slide explains.
+
+\subsection{Slide: How Placement Works ($\sim$30s)}
+\textit{[Slide shows the axis placement diagram --- rule at top, rank table in center, node layout on right, three placements at bottom.]}
+
+This diagram shows the mechanism. Our \texttt{ProcessGroupMesh} takes three axis sizes and lays out ranks in row-major order. That means axis 0 changes the slowest --- ranks 0 through 3 all have axis 0 equal to 0, and ranks 4 through 7 have axis 0 equal to 1. Since \texttt{torchrun} assigns ranks sequentially to nodes, axis 0 ends up being the one that crosses between Node 0 and Node 1.
+
+You can see this in the table. For Good placement we call \texttt{Mesh(pp=2, dp=2, tp=2)}, so PP is axis 0. Look at the PP column --- it is 0 for all of Node 0 and 1 for all of Node 1. That means PP communication goes across nodes, while DP and TP stay within each node.
+
+At the bottom you can see the other placements. Bad placement puts DP in axis 0, TP inter-node puts TP in axis 0. The model code, optimizer, and communication calls stay identical --- we literally just swap the argument order in one constructor call.
+
+But why does this matter? That depends on the hardware, which is what we look at next.
+
+\subsection{Slide: Hardware Setup ($\sim$30s)}
+\textit{[Slide shows the hardware comparison table.]}
+
+Here is our hardware setup. Phase 2 used four g4dn.xlarge instances, each with a single T4 GPU. All communication went over TCP at about 0.6 GB/s. Every GPU-to-GPU link was equally slow, so placement did not matter at all.
+
+Phase 3 uses two g4dn.12xlarge instances, each with four T4 GPUs. Within each instance, GPUs talk over PCIe at about 15 GB/s. Between instances, it is still TCP at 0.6 GB/s.
+
+So now there is a 25 times bandwidth gap between the intra-node and inter-node links. This is exactly what makes that axis ordering from the previous slide so important --- whichever axis lands on axis 0 gets the slow TCP link, so we want to put the lightest communicator there.
+
+\subsection{Slide: Communication-Aware Placement ($\sim$40s)}
+\textit{[Slide shows the clear placement diagram.]}
+
+This diagram shows the ``Good'' placement on our actual 2-node setup. Notice that TP and DP arrows stay within each node on fast PCIe, while only PP crosses between nodes over TCP. That matches what the axis ordering table told us --- PP is on axis 0, so it gets the slow link.
+
+We tested all three configurations from the previous diagram. We will see the throughput numbers in the results.
+
+\subsection{Slide: Models Used ($\sim$30s)}
+\textit{[Slide shows GPT-2 and T5 architecture diagrams.]}
+
+We tested on two model families. On the left is GPT-2, a decoder-only transformer. We used three sizes: Small at 117M parameters, Medium at 354M, and Large at 774M. The key property is that all transformer blocks are identical, so when you split them across pipeline stages, the stages are balanced.
+
+On the right is T5-base, an encoder-decoder model with 237M parameters --- 12 encoder layers and 12 decoder layers. The decoder has an extra cross-attention sublayer that attends to encoder outputs. This makes the decoder heavier than the encoder, which creates a pipeline imbalance. It also means more TP communication per block.
+
+Let me hand over to Meena for the first set of results.
+
+% ======================================================================
+\section{Meena Chidambaram --- Results (Part 1)}
+% ======================================================================
+
+\subsection{Slide: PCIe vs TCP Baselines ($\sim$1 min)}
+\textit{[Slide shows the PCIe vs TCP bar chart. Setup line at top.]}
+
+Thanks Goutham. So let us look at the numbers.
+
+This first result compares how each standalone strategy performs on fast PCIe versus the TCP numbers we got in Phase 2. The model is GPT-2 Medium, 4 GPUs in both cases.
+
+Look at DP: on PCIe, 3,389 tokens per second, which is 2.4 times what we got on TCP. TP jumps from 959 to 2,518 --- a 2.6 times improvement. ZeRO-1 sees the largest gain at 3 times, because it has additional optimizer-state communication on top of the gradient sync.
+
+But PP? It goes from 3,070 to 3,200 --- barely a 4\% improvement. This makes complete sense. PP only sends small activation tensors between adjacent stages. Those messages are not bandwidth-bound, so the faster link does not help much.
+
+This result directly motivates our placement strategy. When we move to the 8-GPU setup with both PCIe and TCP links, we should put PP on the slow TCP link since it does not care, and keep DP and TP on the fast PCIe link where they need the bandwidth.
+
+The low DP throughput in Phase 2 --- 1,393 tokens per second, barely above the single-GPU baseline of 1,361 --- is actually what motivated the move to g4dn.12xlarge instances in the first place. The all-TCP setup was too slow for any communication-heavy strategy.
+
+\subsection{Slide: GPT-2 Hybrid Placement ($\sim$1 min)}
+\textit{[Slide shows GPT-2 three-way bar chart. Setup line at top.]}
+
+Now we activate all three axes: DP=2, PP=2, TP=2, across 8 GPUs on 2 nodes, running GPT-2 Medium.
+
+We tested three placement configurations. Good placement puts PP inter-node and keeps DP and TP intra-node. TP inter-node swaps TP to the slow link. Bad placement puts DP on the slow link.
+
+The result: Good gives 3,519 tokens per second, TP inter-node gives 3,543, and Bad gives 2,926. Good placement is 20\% faster than Bad.
+
+Here is what surprised us. TP inter-node performs almost identically to Good placement. The conventional expectation is that TP should be the most sensitive axis because it does all-reduces every single layer. But at TP degree 2, each all-reduce involves only 2 GPUs, and the messages are small --- a few hundred kilobytes to a few megabytes. TCP can handle that without issues.
+
+DP gradient synchronization, on the other hand, transfers about 1.4 gigabytes for GPT-2 Medium in a single operation. That completely saturates the slow TCP link. So DP turns out to be the real placement bottleneck here, not TP.
+
+When we add ZeRO-1, the gap gets even wider: Good 3,044 versus Bad 2,416 --- Good is now 26\% faster. ZeRO adds extra optimizer-state communication to the DP axis, making it even more sensitive to link speed.
+
+Now let me hand over to Dinesh for the T5 results and the multi-model comparison.
+
+% ======================================================================
+\section{Dinesh Chand --- Results (Part 2) \& Key Findings}
+% ======================================================================
+
+\subsection{Slide: T5-base Hybrid Placement ($\sim$50s)}
+\textit{[Slide shows T5 three-way bar chart. Setup line at top.]}
+
+Thanks Meena. Now let us see if the same trends hold for a completely different architecture. Same setup --- DP=2, PP=2, TP=2 on 8 GPUs --- but this time running T5-base.
+
+The pattern is the same: Good and TP inter-node are roughly equal, Bad is the worst. But the penalty is larger. For T5, Good placement is 27\% faster than Bad, compared to 20\% for GPT-2.
+
+Why is the effect stronger? T5 has more total communication per step than GPT-2. The cross-attention sublayers in the decoder add one extra all-reduce per block, giving T5 60 all-reduces per forward pass versus 48 for GPT-2 Medium. On top of that, T5 is a faster model --- it processes tokens quicker because it is smaller. So communication already takes up a bigger share of each training step. When you then force DP onto the slow TCP link, that overhead hits harder as a percentage of the total step time.
+
+\subsection{Slide: Multi-Model Scaling ($\sim$1 min)}
+\textit{[Slide shows the model scaling comparison chart. Setup line at top.]}
+
+Now here is the key architectural comparison. We take the same configuration --- DP=2, PP=2, TP=2 with Good placement --- and compare single-GPU throughput versus 8-GPU hybrid throughput for three models.
+
+GPT-2 Small gets a 2.24 times speedup. GPT-2 Medium gets 2.51 times. But T5-base gets only 1.72 times.
+
+Notice something important: GPT-2 Small has only 117 million parameters. T5-base has 237 million. The smaller model scales better than the larger one. So this is not about model size at all. It is about architecture.
+
+Two factors explain the gap. First, pipeline imbalance. In GPT-2, all blocks are identical, so the two pipeline stages are nearly perfectly balanced --- 4.07 versus 4.08 GB for Medium. In T5, the encoder stage holds 2.51 GB and the decoder stage holds 3.87 GB --- the decoder is 54\% heavier. In the 1F1B schedule, the encoder finishes each microbatch faster and then sits idle waiting for the decoder. These idle gaps add up.
+
+Second, TP communication overhead. Each T5 decoder block has an extra cross-attention sublayer, which adds one more all-reduce. T5-base needs 60 all-reduces per forward pass, versus 48 for GPT-2 Medium. That is 25\% more communication.
+
+\subsection{Slide: Key Findings ($\sim$50s)}
+\textit{[Slide lists four key findings with improved titles.]}
+
+So here are the four main takeaways from our experiments.
+
+First, communication-aware placement gives a consistent 17 to 27\% throughput boost. This holds across all models we tested.
+
+Second, at low parallelism degrees, DP is actually the most placement-sensitive axis, not TP. This goes against the standard expectation because TP does all-reduces every layer. But at TP=2, those messages are small. DP's gradient sync is much larger and saturates the slow link. At higher TP degrees like 4 or 8, TP messages would grow and TP would likely become the bottleneck again.
+
+Third, the placement penalty is amplified for encoder-decoder models. T5 sees a 27\% gain from good placement versus 20\% for GPT-2. T5's extra cross-attention all-reduces make it more communication-bound overall, so any slow-link overhead has a proportionally bigger impact.
+
+Fourth, there is a 30 to 46\% scaling gap between symmetric and asymmetric architectures. GPT-2's identical blocks mean balanced pipeline stages and fewer all-reduces. T5's encoder-decoder split creates memory imbalance and more TP communication, which hurts hybrid scaling.
+
+I will now hand back to Nadhiya for the summary.
+
+% ======================================================================
+\section{Nadhiya R S --- Summary}
+% ======================================================================
+
+\subsection{Slide: Summary ($\sim$1 min)}
+\textit{[Slide shows summary points and the scaling chart.]}
+
+Thanks Dinesh. Let me pull everything together.
+
+Over the course of this project, we built Mini Colossal-AI --- a framework for comparing four parallelism strategies and their hybrid combinations. We then composed them through a unified 3D plugin that handles any combination of DP, PP, and TP.
+
+We also implemented T5-base as our second model architecture, alongside three sizes of GPT-2.
+
+On the results side, our key message is simple: both the hardware and the model matter. On a heterogeneous cluster with fast and slow links, mapping the bandwidth-heavy axes to the fast link gives you 17 to 27\% higher throughput. And model architecture determines how well hybrid parallelism scales --- the symmetric decoder-only GPT-2 consistently outscales the asymmetric encoder-decoder T5 by 30 to 46\%, even when T5 is the larger model.
+
+These findings are consistent with the placement heuristics used by production systems like Colossal-AI and Megatron-LM, and we have now verified them empirically from first principles.
+
+Thank you. We are happy to take questions.
+
+\end{document}
