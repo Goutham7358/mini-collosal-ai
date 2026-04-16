@@ -1,0 +1,181 @@
+Phase 3 Post-Bugfix Results Summary
+=====================================
+
+BUG DESCRIPTION:
+  plugin.py configure() used if/elif for PP and TP, making them mutually
+  exclusive. When dp=2, pp=2, tp=2 was requested, only PP was active.
+  TP groups were created in the mesh but carried zero traffic. Result:
+  two independent DP(2)×PP(2) training runs on 4 GPUs each, with 4 GPUs
+  wasted as uncoordinated duplicates.
+
+FIX APPLIED:
+  1. Added TensorParallelPipelineStage (pipeline_parallel.py)
+     - Pipeline stage using TensorParallelTransformerBlock instead of
+       plain TransformerBlock
+  2. Added TensorParallelT5PipelineStage (t5.py)
+     - T5 pipeline stage using TP-sharded encoder/decoder blocks
+  3. Fixed configure() (plugin.py)
+     - New branch: if pp_size > 1 and tp_size > 1 → create TP-sharded
+       pipeline stages
+     - Added TP sync for replicated parameters (embeddings, LayerNorm,
+       lm_head) before DP sync
+  4. Updated docstring to list 3D configs as supported
+
+HARDWARE (unchanged from Phase 3):
+  2× g4dn.12xlarge (4× T4 GPUs each, 8 total)
+  Intra-node: PCIe Gen3 ~15 GB/s
+  Inter-node: TCP ~0.6 GB/s
+
+SINGLE-GPU BASELINES (unchanged — not affected by bug):
+  Model          bs=4          bs=8          bs=16         bs=32         Max bs
+  GPT-2 Small    3,619 (3.3G)  4,147 (5.1G)  4,426 (8.7G)  OOM           16
+  GPT-2 Medium   1,404 (7.7G)  1,561 (11.1G) OOM           —             8
+  T5-base        3,125 (4.9G)  3,853 (5.7G)  4,441 (8.6G)  4,747 (14.3G) 32
+
+========================================================================
+RESULTS
+========================================================================
+
+GROUP B: True 3D — Good Placement (GPT-2 Medium, dp=2, pp=2, tp=2)
+─────────────────────────────────────────────────────────────────────
+Config              Throughput    Speedup   Peak Mem (S0/S1)
+─────────────────   ──────────   ────────   ────────────────
+B1: bs=8            4,851 tok/s   3.11×     2.57/2.56 GB
+B2: bs=16           6,012 tok/s   3.85×     2.89/2.87 GB
+B3: bs=32           6,618 tok/s   4.24×     3.60 GB
+B4: bs=64           7,245 tok/s   4.64×     5.14 GB
+B5: bs=128          7,387 tok/s   4.73×     8.21 GB
+    bs=256          OOM
+
+  Speedup is vs single-GPU max (1,561 tok/s at bs=8) for fair comparison.
+  Throughput plateaus at bs=64-128: GPUs become compute-bound once
+  communication latency is fully hidden by large batch compute.
+
+Pre-fix reference:  3,519 tok/s   2.26×     4.07/4.08 GB  (vs 1-GPU bs=8)
+
+
+GROUP C: True 3D — Bad Placement (GPT-2 Medium)
+─────────────────────────────────────────────────
+Config              Throughput    Speedup
+─────────────────   ──────────   ────────
+C1: bs=8            4,126 tok/s   2.94×
+    bs≥16          DEADLOCKS (NCCL contention with larger activations)
+
+Pre-fix reference:  2,926 tok/s   2.08×
+
+
+GROUP D: True 3D — TP Inter-node (GPT-2 Medium)
+─────────────────────────────────────────────
+Config              Throughput    Speedup
+─────────────────   ──────────   ────────
+D1: bs=8            3,776 tok/s   2.69×
+    bs≥16          DEADLOCKS (same as bad placement)
+
+Pre-fix reference:  3,543 tok/s   2.52×
+
+  NOTE: Bad and worst placements deadlock at bs≥16 due to NCCL P2P
+  contention when larger activation tensors compete with DP/TP traffic
+  on the same inter-node TCP link. Good placement avoids this by
+  isolating PP (small P2P) on the inter-node link.
+
+
+GROUP E: Architecture Comparison (good placement)
+─────────────────────────────────────────────────
+
+  E.1 At bs=8 (same batch for all models):
+  Model          1-GPU (bs=4)  8-GPU (bs=8)  Speedup
+  ─────────────  ──────────  ────────────  ───────
+  GPT-2 Small    3,879         10,297 tok/s   2.65×
+  GPT-2 Medium   1,404          5,014 tok/s   3.57×
+  T5-base        3,359          5,973 tok/s   1.78×
+
+  E.2 At max batch (fair comparison: each config at its peak throughput):
+  Model          1-GPU max         8-GPU max (bs=128)  Speedup
+  ─────────────  ────────────────  ──────────────────  ───────
+  GPT-2 Small    4,426 (bs=16)     15,546 tok/s        3.51×
+  GPT-2 Medium   1,561 (bs=8)       7,387 tok/s        4.73×
+  T5-base        4,747 (bs=32)     16,555 tok/s        3.49×
+
+  8-GPU batch sweep (good placement):
+  Model          bs=8       bs=32       bs=64       bs=128      bs=256
+  ─────────────  ────────   ──────────  ──────────  ──────────  ─────
+  GPT-2 Small    10,297     14,534      15,509      15,546      15,461
+  GPT-2 Medium    5,014      6,618       7,245       7,387      OOM
+  T5-base         5,973     13,454      15,589      16,555       —
+
+
+GROUP F: True 3D + ZeRO-1 (GPT-2 Medium, good placement)
+──────────────────────────────────────────────────────────
+Config              Throughput    Speedup
+─────────────────   ──────────   ────────
+F1: bs=8            4,405 tok/s   3.14×
+
+Pre-fix reference:  3,044 tok/s   2.17×
+
+
+========================================================================
+KEY FINDINGS
+========================================================================
+
+1. PLACEMENT IMPACT WITH TRUE 3D:
+   Good (PP inter-node):   4,851 tok/s
+   Bad (DP inter-node):    4,126 tok/s  → Good is 17.6% faster
+   Worst (TP inter-node):  3,776 tok/s  → Good is 28.5% faster
+
+   With real TP traffic, TP inter-node is the ACTUAL worst placement.
+   Pre-fix showed no TP penalty because TP was dead code (zero traffic).
+
+2. THROUGHPUT IMPROVEMENT FROM TRUE TP:
+   Post-fix vs pre-fix (same batch size):
+   - GPT-2 Small:  10,297 vs 8,678 → +18.7%
+   - GPT-2 Medium:  5,014 vs 3,519 → +42.5%
+   - T5-base:       5,973 vs 5,790 → +3.2%
+   T5 gains least because cross-attention adds more TP all-reduce overhead.
+
+3. MEMORY SAVINGS FROM TP:
+   Pre-fix peak memory: ~4.07 GB/GPU (full blocks)
+   Post-fix peak memory: ~2.57 GB/GPU (TP-sharded blocks)
+   Memory reduction: 37% — enables much larger batch sizes.
+   Single GPU: max bs=8 (11.07 GB). 8-GPU with TP: max bs=128 (8.21 GB).
+   TP enables 16× larger batch size.
+
+4. BATCH SIZE SCALING (enabled by TP memory savings):
+   bs=8   → 4,851 tok/s  (2.57 GB)  — communication-bound
+   bs=16  → 6,012 tok/s  (2.89 GB)  — +24%
+   bs=32  → 6,618 tok/s  (3.60 GB)  — +10%
+   bs=64  → 7,245 tok/s  (5.14 GB)  — +9%
+   bs=128 → 7,387 tok/s  (8.21 GB)  — +2% (compute-bound plateau)
+   Diminishing returns: at large batches, communication is fully hidden
+   and GPU FLOPS becomes the bottleneck.
+
+5. ARCHITECTURE SCALING (true 3D):
+   At bs=8:      GPT-2 Small 2.65×, GPT-2 Medium 3.57×, T5-base 1.78×
+   At max batch:  GPT-2 Small 3.51×, GPT-2 Medium 4.73×, T5-base 3.49×
+
+   At bs=8, GPT-2 scales much better than T5 (architectural overhead).
+   At max batch, T5 CATCHES UP to GPT-2 Small (3.49× vs 3.51×) because
+   T5's smaller per-GPU memory allows larger batches that hide its
+   communication overhead. GPT-2 Medium still leads (4.73×) because
+   it has the most compute per step relative to communication.
+
+   T5 pipeline imbalance: encoder 1.69 GB vs decoder 2.75 GB (63% heavier).
+   T5 has 25% more TP all-reduces (60 vs 48) from cross-attention.
+
+6. PLACEMENT STABILITY:
+   Good placement works at all batch sizes (up to bs=128).
+   Bad and worst placements DEADLOCK at bs≥16.
+   This makes good placement not just faster but essential for
+   production use where larger batch sizes are needed.
+
+========================================================================
+THEORETICAL ANALYSIS
+========================================================================
+With true 3D (dp=2, pp=2, tp=2):
+  - TP: does NOT multiply throughput (memory optimization, adds comm overhead)
+  - Effective parallelism for throughput: DP × PP = 2 × 2 = 4× max
+  - Pipeline bubble: (S-1)/(S-1+M) = 1/9 ≈ 11%
+  - Realistic ceiling: ~3.2-3.5× (after DP sync + TP all-reduce overhead)
+  - Pre-fix achieved 2.51× because TP was dead (no overhead but also no sharding)
+  - Post-fix may show slightly lower throughput at same batch size but:
+    * Training is now CORRECT (all 8 GPUs do useful work)
+    * Memory freed by TP allows larger batches → higher throughput

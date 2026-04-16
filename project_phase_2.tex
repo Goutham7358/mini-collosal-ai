@@ -1,0 +1,278 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+% The preceding line is only needed to identify funding in the first footnote. If that is unneeded, please comment it out.
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{minted}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{Mini Colossal-AI: Implementing Distributed Parallelism Strategies from Scratch\\}
+
+\author{\IEEEauthorblockN{Dinesh Chand}
+\IEEEauthorblockA{\textit{MTech-AI, IISc-Bangalore} \\
+dineshchand@iisc.ac.in}
+\and
+\IEEEauthorblockN{Goutham P}
+\IEEEauthorblockA{\textit{MTech-AI, IISc-Bangalore} \\
+gouthamp@iisc.ac.in}
+\and
+\IEEEauthorblockN{Meena Chidambaram}
+\IEEEauthorblockA{\textit{MTech-AI, IISc-Bangalore} \\
+meenac@iisc.ac.in}
+\and
+\IEEEauthorblockN{Nadhiya R S}
+\IEEEauthorblockA{\textit{MTech-AI, IISc-Bangalore} \\
+nadhiyar@iisc.ac.in}
+}
+
+\maketitle
+
+\begin{abstract}
+Training large language models requires distributing computation across multiple GPUs. In this project, we build \textit{Mini Colossal-AI}, a simplified distributed training library where every component is written from scratch using only low-level \mintinline{python}{torch.distributed} primitives. We implement four parallelism strategies: data parallelism, ZeRO optimizer sharding, 1D tensor parallelism, and pipeline parallelism. For each strategy, we implement multiple variants (e.g., different gradient sync algorithms for DP, Stage 1 vs.\ Stage 2 for ZeRO, naive vs.\ 1F1B for pipeline). We then compose these into hybrid configurations (DP$\times$TP, DP$\times$PP, DP$\times$PP+ZeRO) through a unified plugin that follows Colossal-AI's 3D parallelism mesh design. We benchmark all standalone and hybrid configurations on a 4-node GPU cluster training GPT-2 on WikiText-2, collecting throughput, memory, and scaling efficiency metrics.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Distributed Training, Data Parallelism, Pipeline Parallelism, Tensor Parallelism, ZeRO, Hybrid Parallelism
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+The growth of Transformer-based models from millions to billions of parameters~\cite{DBLP:journals/corr/abs-1810-04805, DBLP:journals/corr/abs-2005-14165} has created a ``memory wall'' where model parameters, gradients, and optimizer states together exceed the capacity of a single GPU. Distributed training addresses this by spreading computation across multiple devices, but different strategies involve different trade-offs: Data Parallelism replicates the model on every GPU, Tensor Parallelism~\cite{DBLP:journals/corr/abs-1909-08053} splits individual layers, Pipeline Parallelism~\cite{DBLP:journals/corr/abs-1811-06965, 10.1145/3341301.3359646} distributes layers across devices, and ZeRO~\cite{rajbhandari2019zero} partitions optimizer states. Production frameworks such as DeepSpeed~\cite{rasley2020deepspeed} and Colossal-AI~\cite{10.1145/3605573.3605613} implement and compose these strategies, but they hide the underlying communication logic behind high-level APIs, making it difficult to reason about how each strategy works.
+
+To develop this understanding from first principles, we present \textit{Mini Colossal-AI}, a distributed training library built entirely from raw \texttt{torch.distributed} primitives. 
+
+\section{Related Work}
+
+\textbf{Data Parallelism (DP)} replicates the model on every GPU and synchronizes gradients after each backward pass. The main bottleneck is the all-reduce communication. Ring all-reduce~\cite{patarasuk2009bandwidth} distributes the reduction across all nodes in $2(P{-}1)$ steps, achieving bandwidth-optimal communication. Gradient bucketing~\cite{li2020pytorch} further improves this by batching many small gradient tensors into larger buffers before triggering all-reduce, reducing the number of communication rounds.
+
+\textbf{ZeRO}~\cite{rajbhandari2019zero} addresses the memory redundancy in DP, where every GPU stores the full optimizer states, gradients, and parameters. Stage~1 partitions only the optimizer states, while Stage~2 also partitions gradients, reducing per-GPU memory from $16P$ bytes to roughly $4P + 12P/N$ or $4P + 4P/N$ respectively, where $P$ is the parameter count and $N$ is the number of GPUs.
+
+\textbf{Tensor Parallelism (TP)} splits individual layers across GPUs. Megatron-LM~\cite{DBLP:journals/corr/abs-1909-08053} introduced 1D TP for transformers, where each attention head and MLP slice is computed on a separate GPU, requiring two all-reduces per transformer block.
+
+\textbf{Pipeline Parallelism (PP)} assigns consecutive layers to different GPUs. GPipe~\cite{DBLP:journals/corr/abs-1811-06965} splits mini-batches into micro-batches for concurrent execution but suffers from pipeline flushes. PipeDream~\cite{10.1145/3341301.3359646} introduced the 1F1B (one-forward-one-backward) schedule, which interleaves forward and backward passes to keep more stages busy simultaneously.
+
+\textbf{Colossal-AI}~\cite{10.1145/3605573.3605613} unifies these strategies through a process group mesh, an $N$-dimensional grid of ranks where each axis corresponds to a parallelism dimension (DP, PP, TP), enabling arbitrary combinations without code duplication. Our work follows this design closely.
+
+
+\section{Methodology}
+
+We implement Mini Colossal-AI as a Python library with a separate benchmarking suite. All experiments run on a cluster of 4 AWS g4dn.xlarge instances, each with a single NVIDIA Tesla T4 (16\,GB VRAM), connected over a VPC private network using TCP sockets. We use PyTorch 2.4.1 with CUDA 12.1 and the NCCL backend.
+
+\subsection{Model and Data}
+
+For most experiments we use GPT-2 Medium (354M parameters, 24 layers, hidden size 1024, 16 attention heads). For 4-stage pipeline parallelism we use GPT-2 Large (774M parameters, 36 layers) which does not fit on a single T4 for training. The dataset is WikiText-2 (approximately 2.4M tokens), tokenized with the GPT-2 byte-pair encoding via the \mintinline{python}{tiktoken} library. We use a fixed sequence length of 256.
+
+\subsection{Data Parallelism}
+
+Each GPU holds a full copy of the model and processes a distinct data shard. After the backward pass, gradients are averaged across all GPUs before the optimizer step. Our implementations use two communication operations from PyTorch's \texttt{torch.distributed} library~\cite{li2020pytorch}: \texttt{dist.send}/\texttt{dist.recv}, where one GPU sends gradients directly to another and \texttt{dist.all\_reduce}, where all GPUs participate at once to sum their gradients, with NCCL internally choosing the best algorithm (ring, tree, etc.).
+
+We implement four synchronization variants. First, the naive approach uses \texttt{dist.send}/\texttt{dist.recv} in an all-to-all pattern with $O(P)$ bandwidth cost. Second, ring all-reduce~\cite{patarasuk2009bandwidth} arranges GPUs in a ring and performs reduce-scatter and all-gather phases via \texttt{dist.send}/\texttt{dist.recv}, achieving a bandwidth-optimal cost of $2N(P{-}1)/P$. Third, the ring-bucketed variant groups gradients into 25\,MB buckets~\cite{li2020pytorch} before applying the same ring algorithm, reducing communication rounds from one per parameter to roughly five per step. Fourth, the NCCL-bucketed variant uses the same bucketing but calls \texttt{dist.all\_reduce} on each bucket, letting NCCL handle the communication internally. This variant also accepts an optional process group so that gradient averaging can be restricted to a subset of GPUs in hybrid configurations.
+
+\subsection{ZeRO Optimizer Sharding}
+
+We implement ZeRO~\cite{rajbhandari2019zero} Stage~1 and Stage~2 as custom optimizer wrappers. In both stages, the model's parameters are flattened into a single vector and divided equally among $P$ GPUs. Each GPU only creates Adam optimizer states (momentum and variance) for its own $1/P$ partition, cutting optimizer memory by a factor of $P$.
+
+In Stage~1, after the backward pass, gradients are averaged across all GPUs using \texttt{dist.all\_reduce}. Each GPU then runs the Adam update only on its own partition and calls \texttt{dist.all\_gather} so every GPU ends up with the full updated model.
+
+Stage~2 saves additional memory by also partitioning gradients. Each GPU only keeps the gradient slice for its own partition and discards the rest. After updating its partition, each GPU broadcasts its updated parameters to all others using \texttt{dist.broadcast}. This reduces both gradient and optimizer memory by a factor of $P$.
+
+Stage~1 accepts an optional process group parameter, allowing it to run within a subset of GPUs for hybrid parallelism.
+
+\subsection{1D Tensor Parallelism}
+
+Following Megatron-LM~\cite{DBLP:journals/corr/abs-1909-08053}, we implement two custom linear layers: \textbf{ColumnParallelLinear} (splits weights along columns, no forward communication, all-reduce on backward) and \textbf{RowParallelLinear} (splits along rows, all-reduce to sum partial outputs). In each transformer block, the attention Q/K/V projections use column-parallel and the output projection uses row-parallel; the MLP is split similarly. This gives 2 all-reduces per block, totaling 48 per forward pass for our 24-layer model.
+
+\subsection{Pipeline Parallelism with 1F1B}
+
+We partition the model's transformer blocks evenly across pipeline stages and communicate activations (forward) and gradients (backward) via \mintinline{python}{dist.send}/\mintinline{python}{recv}. We implement two schedules: the \textbf{naive} schedule processes all micro-batches sequentially through each stage with bubble ratio $\approx (S{-}1)/S$, while the \textbf{1F1B} schedule interleaves one forward and one backward pass per stage after a warmup of $S{-}1$ forwards, reducing the bubble to $(S{-}1)/(S{-}1+M)$. With $S=4$ stages and $M=8$ micro-batches, this drops the bubble from 75\% to $\sim$27\%. Both schedules support rank remapping for use in hybrid configurations.
+
+\subsection{Hybrid Parallelism and the Unified Plugin}
+
+Following Colossal-AI's approach~\cite{10.1145/3605573.3605613}, we wrote a single unified plugin that takes TP size, PP size, and ZeRO stage as arguments and computes $\text{dp\_size} = \text{world\_size} / (\text{tp\_size} \times \text{pp\_size})$ automatically. The core idea is a \textbf{3D process group mesh}: all GPUs are arranged in a grid with axes (DP, PP, TP), and \mintinline{python}{torch.distributed} sub-groups are created along each axis. For example, DP(2)$\times$PP(2) on 4 GPUs:
+
+\begin{center}
+\small
+\begin{tabular}{ll}
+GPU 0: (dp=0, pp=0) & GPU 1: (dp=0, pp=1) \\
+GPU 2: (dp=1, pp=0) & GPU 3: (dp=1, pp=1) \\
+\end{tabular}
+\end{center}
+
+The 24 layers are split into 2 pipeline stages, giving two parallel pipelines on different data: GPU 0$\rightarrow$1 and GPU 2$\rightarrow$3. After backward, GPUs sharing a stage (0$\leftrightarrow$2, 1$\leftrightarrow$3) all-reduce their gradients. This works because every standalone component accepts an optional process group --- the plugin passes the DP sub-group to gradient sync, PP neighbor ranks to the pipeline schedule, and so on.
+
+With 8 GPUs and tp=2, pp=2, the plugin gives a full $(2,2,2)$ grid where each GPU belongs to one TP, PP, and DP group simultaneously. Our 4-GPU cluster limits us to two axes at a time.
+
+
+\section{Results and Discussion}
+
+\subsection{Single GPU Baseline}
+
+\textbf{Setup.} GPT-2 Medium (354M parameters, 24 layers), WikiText-2 dataset, batch size 4, sequence length 256, 30 training steps, AdamW optimizer ($\text{lr}=3\times10^{-4}$).
+
+\begin{table}[h]
+\centering
+\caption{Single GPU baseline}
+\label{tab:baseline}
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Throughput & 1,361 tok/s \\
+Peak memory & 7.67 GB \\
+Avg step time & 749 ms \\
+Total time (30 steps) & 22.6 s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+This baseline serves as the reference point for all distributed experiments. All scaling efficiency numbers are computed relative to this throughput.
+
+\subsection{Data Parallelism}
+
+\textbf{Setup.} Same model and dataset as baseline. Each GPU processes a different data shard (batch size 4 per GPU, effective batch size 16). Gradients are synchronized after each backward pass.
+
+\begin{table}[h]
+\centering
+\caption{Data parallelism methods (4 GPUs, 30 steps)}
+\label{tab:dp}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Method} & \textbf{Tput*} & \textbf{Step} & \textbf{Mem} & \textbf{Scale} \\
+ & \textbf{(tok/s)} & \textbf{(ms)} & \textbf{(GB)} & \textbf{Eff.} \\
+\midrule
+Naive & 492 & 8,320 & 7.67 & 9.0\% \\
+Ring & 1,082 & 3,783 & 7.67 & 19.9\% \\
+Ring bucketed & 1,258 & 3,252 & 8.14 & 23.1\% \\
+NCCL allreduce buck. & 1,393 & 2,938 & 7.67 & 25.6\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+We define scaling efficiency as aggregate throughput divided by ideal linear scaling (single-GPU throughput $\times$ GPU count). Peak memory is identical across all methods ($\sim$7.67\,GB) since DP only changes how gradients are communicated, not what is stored. Scaling efficiency improves steadily from 9\% (naive) to 25.6\% (NCCL-bucketed) as we reduce message count and leverage NCCL's optimized collectives. Overall efficiency remains low because all communication goes over TCP ($\sim$5\,Gbps); with InfiniBand or NVLink, DP typically reaches 90\%+.
+
+\subsection{ZeRO Optimizer Sharding}
+
+\textbf{Setup.} Same model and dataset as baseline. 4 GPUs, batch size 4 per GPU, 30 steps. ZeRO partitions optimizer states (Stage 1) or optimizer states + gradients (Stage 2) across GPUs.
+
+\begin{table}[h]
+\centering
+\caption{ZeRO Stage 1 vs.\ Stage 2 (4 GPUs, 30 steps)}
+\label{tab:zero}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Metric} & \textbf{Stage 1} & \textbf{Stage 2} \\
+\midrule
+Aggregate throughput & 934 tok/s & 915 tok/s \\
+Per-GPU throughput & 234 tok/s & 229 tok/s \\
+Avg step time & 4,365 ms & 4,453 ms \\
+Peak memory & 9.47 GB & 6.96 GB \\
+Optimizer memory & 0.71 GB & --- \\
+Grad + optim memory & --- & 1.06 GB \\
+Memory saving & optim/4& (grad+optim)/4 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Both stages cut optimizer memory by 4$\times$ (2.83\,GB $\rightarrow$ 0.71\,GB), but Stage~1's peak memory actually \textit{rises} to 9.47\,GB because the \mintinline{python}{all_gather} after each optimizer step creates temporary full-parameter copies. Stage~2 avoids this by also partitioning gradients, bringing peak memory to 6.96\,GB (9.3\% below baseline). Throughput is similar between stages (934 vs.\ 915 tok/s); both are slower than DP due to the extra \mintinline{python}{all_gather} round.
+
+\subsection{1D Tensor Parallelism}
+
+\textbf{Setup.} GPT-2 Medium split across 4 GPUs using column-parallel and row-parallel linear layers (Megatron-LM style). All GPUs process the \textit{same} data (no data parallelism). Batch size 4, sequence length 256, 30 steps.
+
+\begin{table}[h]
+\centering
+\caption{1D Tensor Parallelism (4-way, 30 steps)}
+\label{tab:tp}
+\begin{tabular}{lr}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Throughput & 959 tok/s \\
+Peak memory & 3.38 GB \\
+Memory reduction vs.\ baseline & 56\% \\
+Parameters per GPU & 127.4M (vs.\ 354M) \\
+All-reduces per forward pass & 48 \\
+Avg step time & 1,065 ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+TP achieves the best memory reduction (56\%, from 7.67 to 3.38\,GB) but throughput drops to 959 tok/s due to 48 all-reduces per forward pass over TCP, adding $\sim$316\,ms of overhead per step.
+
+\subsection{Pipeline Parallelism}
+
+\textbf{Setup.} GPT-2 Medium (24 layers, 6 layers per stage) across 4 pipeline stages. Batch size 8, split into 8 micro-batches. 20 training steps. We compare the naive sequential schedule against the 1F1B (one-forward-one-backward) interleaved schedule.
+
+\begin{table}[h]
+\centering
+\caption{Naive vs.\ 1F1B pipeline schedule (4 stages, 8 micro-batches)}
+\label{tab:pipeline}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Metric} & \textbf{Naive} & \textbf{1F1B} \\
+\midrule
+Throughput & 3,050 tok/s & 3,070 tok/s \\
+Theoretical bubble & 75.0\% & 27.3\% \\
+Avg mem per stage & 3.09 GB & 2.17 GB \\
+Peak mem (last stage) & 4.21 GB & 2.56 GB \\
+Mem reduction (1F1B vs.\ naive) & \multicolumn{2}{c}{30\% avg, 39\% last stage} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+PP gets the highest throughput ($\sim$3,050--3,070 tok/s) since it only does point-to-point sends between adjacent stages. Naive and 1F1B show nearly identical throughput despite very different bubble ratios (75\% vs.\ 27.3\%) because on our TCP network the GPUs idle waiting on transfers, leaving nothing for 1F1B to overlap. Where 1F1B does help is memory: by interleaving forward and backward it frees activations earlier, giving a 30\% average reduction (39\% on the last stage).
+
+\subsection{Hybrid Configurations}
+
+\textbf{Setup.} All hybrid configurations use the unified plugin with the 3D process group mesh. GPT-2 Medium, batch size 8, sequence length 256, 20 steps. The plugin auto-calculates $\text{dp\_size} = \text{world\_size} / (\text{tp\_size} \times \text{pp\_size})$.
+
+\begin{table}[h]
+\centering
+\caption{Hybrid parallelism results (4 GPUs, unified plugin)}
+\label{tab:hybrid}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Config} & \textbf{Tput*} & \textbf{Mem} & \textbf{Bubble} & \textbf{Mem} \\
+ & \textbf{(tok/s)} & \textbf{(GB)} & & \textbf{Save} \\
+\midrule
+DP2$\times$TP2 & 2,327 & 4.80 & --- & 37\% \\
+DP2$\times$PP2 & 2,281 & 4.08 & 11.1\% & 47\% \\
+DP2$\times$PP2+ZeRO-1 & 1,742 & 5.74 & 11.1\% &  opt mem/2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The DP$\times$TP hybrid gives a good balance: tensor parallelism halves the per-GPU model memory while data parallelism provides throughput scaling. The DP$\times$PP hybrid achieves similar throughput with even lower memory (4.08\,GB, 47\% reduction) and a reduced bubble ratio of 11.1\% (2 stages instead of 4). In the DP(2)$\times$PP(2)+ZeRO-1 config, $\text{dp} = 4/(2{\times}1) = 2$, so ZeRO-1 operates within the DP group. Adding ZeRO-1 on top of PP halves the optimizer state storage (0.81\,GB vs.\ 1.62\,GB), but peak memory actually rises to 5.74\,GB (vs.\ 4.08 for DP$\times$PP) because the all-gather after each optimizer step creates temporary full-parameter copies, same effect we saw in standalone ZeRO-1. Throughput also drops (1,742 vs.\ 2,281 tok/s) due to this extra communication round. With only 2 GPUs for DP, the optimizer split is too small to offset the overhead, ZeRO-1 becomes more useful with larger DP groups (8 GPUs) where the per-GPU savings are significant.
+
+\subsection{Summary and Discussion}
+
+On our TCP cluster, PP dominates because it only does point-to-point sends, while DP and TP suffer from frequent all-to-all syncs over the slow network. Within DP alone, the 2.8$\times$ improvement from naive to NCCL-bucketed (492 $\rightarrow$ 1,393 tok/s) shows that the choice of sync algorithm matters as much as the parallelism strategy. Each strategy trades off memory and throughput differently, and the hybrid plugin composes them without code duplication by passing the right process sub-group to each component.
+
+\section{Conclusion}
+
+We implemented four distributed parallelism strategies from scratch using only \mintinline{python}{torch.distributed} primitives, and composed them into hybrid configurations through a unified 3D plugin modeled after Colossal-AI. For each strategy we compared multiple variants and saw that implementation choices (like gradient sync function choice) matter just as much as the high-level strategy.
+
+Our current cluster of 4 g4dn.xlarge instances has only 1 GPU per node, so all GPU-to-GPU communication goes over TCP, which is slow. This is why communication-heavy strategies like TP and DP show low throughput, while PP performs comparatively well since it only sends activations between adjacent stages. This taught us how much hardware quality affects the relative performance of different parallelism strategies, the best strategy is not a fixed answer but depends heavily on the hardware at hand.
+
+For Phase 3, we plan to spin up two p3.8xlarge instances, each with 4 NVIDIA V100 GPUs connected via NVLink. This gives us 8 GPUs total, with fast intra-node NVLink and slower inter-node TCP. With 8 GPUs we can activate all three axes of the hybrid mesh simultaneously (ie dp=2, pp=2, tp=2), which was not possible with only 4 GPUs. More importantly, the mixed interconnect setup lets us study \textit{communication-aware placement}: TP should run within a node (where NVLink provides high bandwidth), while PP and DP can run across nodes (where only lightweight point-to-point or periodic gradient syncs are needed). We expect this to significantly improve TP and hybrid throughput compared to our current all-TCP setup.
+
+% ------------------------------------------------------------------------------
+% Reference and Cited Works
+% ------------------------------------------------------------------------------
+
+\bibliographystyle{ieeetr}
+\bibliography{references}
+
+% ------------------------------------------------------------------------------
+
+\end{document}

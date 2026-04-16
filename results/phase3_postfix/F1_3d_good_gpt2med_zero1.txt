@@ -1,0 +1,95 @@
+=== Phase 3 Benchmark: 2 NODES × 4 GPUs (8 total) ===
+  Master: 10.0.3.199  Worker: 10.0.3.146
+  Args: --tp_size 2 --pp_size 2 --zero_stage 1 --num_steps 20 --model medium --batch_size 8
+/home/ubuntu/workspace/mini-colossal-ai/benchmarks/launch_phase3.sh: line 62: 21343 Killed                  ssh -o StrictHostKeyChecking=no -i $PEM ubuntu@$WORKER "pkill -9 -f bench_unified 2>/dev/null"
+  Network interface: ens5
+Starting worker (node_rank=1) on 10.0.3.146
+Starting master (node_rank=0)
+W0416 15:25:58.515813 140534458439488 torch/distributed/run.py:779] 
+W0416 15:25:58.515813 140534458439488 torch/distributed/run.py:779] *****************************************
+W0416 15:25:58.515813 140534458439488 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+W0416 15:25:58.515813 140534458439488 torch/distributed/run.py:779] *****************************************
+  [Rank 0] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=0
+  [Rank 1] ip-10-0-3-199 (10.0.3.199)  dp_rank=0  pp_rank=0  tp_rank=1
+  [Rank 3] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=1
+  [Rank 2] ip-10-0-3-199 (10.0.3.199)  dp_rank=1  pp_rank=0  tp_rank=0
+
+  MiniColossal Unified Benchmark: DP(2) x PP(2) x TP(2) x ZeRO-1
+  World size: 8
+  DP=2  PP=2  TP=2  ZeRO=1
+  Model: GPT-2 Medium (24L)
+  Batch size: 8  Steps: 20
+  [ZeRO-1] Total params: 127,339,520
+  [ZeRO-1] Partition size: 63,669,760
+  [ZeRO-1] This GPU stores optimizer states for 63,669,760 params
+  [ZeRO-1] Optimizer memory: 0.509 GB (vs 1.019 GB standard, 2.0x saving)
+  [ZeRO-1] Total params: 127,339,520
+  [ZeRO-1] Partition size: 63,669,760
+  [ZeRO-1] This GPU stores optimizer states for 63,669,760 params
+  [ZeRO-1] Optimizer memory: 0.509 GB (vs 1.019 GB standard, 2.0x saving)
+  Params per GPU: 127.3M
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+  [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+
+  Training for 20 steps...
+
+  [Rank 1] Step 10/20  mem=3.61GB
+  [Rank 0] Step 10/20  mem=3.61GB
+  [Rank 3] Step 10/20  mem=3.59GB
+  [Rank 2] Step 10/20  mem=3.59GB
+  [Rank 1] Step 20/20  mem=3.61GB
+  [Rank 0] Step 20/20  mem=3.61GB
+  [Rank 3] Step 20/20  mem=3.59GB
+  [Rank 2] Step 20/20  mem=3.59GB
+
+============================================================
+  RESULTS: DP(2) x PP(2) x TP(2) x ZeRO-1
+============================================================
+  Steps:              20
+  Total time:         18.6s
+  Aggregate throughput: 4405 tokens/s
+  Microbatches:       8
+  Theoretical bubble: 11.1%
+  ZeRO-1:            2-way partitioned
+  ---
+  [Rank 0] throughput=2202 tok/s  peak_mem=3.61GB  time=18.6s
+  [Rank 1] throughput=2202 tok/s  peak_mem=3.61GB  time=18.6s
+  [Rank 2] throughput=2202 tok/s  peak_mem=3.59GB  time=18.6s
+  [Rank 3] throughput=2202 tok/s  peak_mem=3.59GB  time=18.6s
+  [Rank 4] throughput=2207 tok/s  peak_mem=3.58GB  time=18.6s
+  [Rank 5] throughput=2206 tok/s  peak_mem=3.58GB  time=18.6s
+  [Rank 6] throughput=2207 tok/s  peak_mem=4.19GB  time=18.6s
+  [Rank 7] throughput=2206 tok/s  peak_mem=4.19GB  time=18.6s
+============================================================
+
+[worker] W0416 15:25:55.701619 140185148725056 torch/distributed/run.py:779] 
+[worker] W0416 15:25:55.701619 140185148725056 torch/distributed/run.py:779] *****************************************
+[worker] W0416 15:25:55.701619 140185148725056 torch/distributed/run.py:779] Setting OMP_NUM_THREADS environment variable for each process to be 1 in default, to avoid your system being overloaded, please further tune the variable for optimal performance in your application as needed. 
+[worker] W0416 15:25:55.701619 140185148725056 torch/distributed/run.py:779] *****************************************
+[worker]   [Rank 4] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=0
+[worker]   [Rank 6] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=0
+[worker]   [Rank 7] ip-10-0-3-146 (10.0.3.146)  dp_rank=1  pp_rank=1  tp_rank=1
+[worker]   [Rank 5] ip-10-0-3-146 (10.0.3.146)  dp_rank=0  pp_rank=1  tp_rank=1
+[worker]   [ZeRO-1] Total params: 127,079,424
+[worker]   [ZeRO-1] Partition size: 63,539,712
+[worker]   [ZeRO-1] This GPU stores optimizer states for 63,539,712 params
+[worker]   [ZeRO-1] Optimizer memory: 0.508 GB (vs 1.017 GB standard, 2.0x saving)
+[worker]   [ZeRO-1] Total params: 127,079,424
+[worker]   [ZeRO-1] Partition size: 63,539,712
+[worker]   [ZeRO-1] This GPU stores optimizer states for 63,539,712 params
+[worker]   [ZeRO-1] Optimizer memory: 0.508 GB (vs 1.017 GB standard, 2.0x saving)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [train] Loaded 2,391,884 tokens -> 9,343 samples (seq_len=256)
+[worker]   [Rank 7] Step 10/20  loss=8.2233  mem=4.19GB
+[worker]   [Rank 6] Step 10/20  loss=8.2233  mem=4.19GB
+[worker]   [Rank 4] Step 10/20  loss=7.9696  mem=3.58GB
+[worker]   [Rank 5] Step 10/20  loss=7.9696  mem=3.58GB
+[worker]   [Rank 7] Step 20/20  loss=7.8226  mem=4.19GB
+[worker]   [Rank 6] Step 20/20  loss=7.8226  mem=4.19GB
+[worker]   [Rank 5] Step 20/20  loss=7.6351  mem=3.58GB
+[worker]   [Rank 4] Step 20/20  loss=7.6351  mem=3.58GB
+=== Done ===

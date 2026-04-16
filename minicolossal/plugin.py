@@ -22,6 +22,8 @@ Supported configurations (any combo where tp_size * pp_size divides world_size):
   tp_size=2, pp_size=1, zero=0  → DP(W/2) x TP(2)
   tp_size=1, pp_size=2, zero=0  → DP(W/2) x PP(2)
   tp_size=1, pp_size=2, zero=1  → DP(W/2) x PP(2) + ZeRO-1
+  tp_size=2, pp_size=2, zero=0  → DP(W/4) x PP(2) x TP(2)  [true 3D]
+  tp_size=2, pp_size=2, zero=1  → DP(W/4) x PP(2) x TP(2) + ZeRO-1
 
 Constraint (from Colossal-AI): zero_stage <= 1 when pp_size > 1.
 """
@@ -34,13 +36,14 @@ from typing import List, Tuple, Optional
 from minicolossal.data_parallel import allreduce_bucketed_grads
 from minicolossal.pipeline_parallel import (
     create_pipeline_stage,
+    create_tp_pipeline_stage,
     split_into_microbatches,
     one_f_one_b_forward_backward,
 )
 from minicolossal.tensor_parallel import TensorParallelGPT2, TensorParallelT5
 from minicolossal.zero_optim import ZeROStage1Optimizer
 from minicolossal.gpt2 import GPT2Config, GPT2Model
-from minicolossal.t5 import T5Config, T5Model, create_t5_pipeline_stage
+from minicolossal.t5 import T5Config, T5Model, create_t5_pipeline_stage, create_tp_t5_pipeline_stage
 
 
 # ============================================================================
@@ -263,14 +266,25 @@ class MiniColossalPlugin:
         Returns: (model_or_stage, optimizer)
 
         The returned model depends on the config:
-          - PP enabled → PipelineStage (subset of layers)
-          - TP enabled → TensorParallelGPT2 (sharded layers)
-          - Neither    → Full GPT2Model
+          - PP + TP  → TensorParallelPipelineStage (TP-sharded pipeline stage)
+          - PP only  → PipelineStage (subset of layers)
+          - TP only  → TensorParallelGPT2 (sharded layers)
+          - Neither  → Full GPT2Model
         """
         # --- Build model ---
         is_t5 = getattr(cfg, 'is_t5', False)
-        if self.pp_size > 1:
-            # Pipeline parallelism: each rank holds a subset of layers
+        if self.pp_size > 1 and self.tp_size > 1:
+            # True 3D: TP-sharded pipeline stages (each stage uses TP blocks)
+            if is_t5:
+                model = create_tp_t5_pipeline_stage(
+                    cfg, self.pp_size, self.pp_rank,
+                    self.tp_size, self.tp_rank, self.tp_group, device)
+            else:
+                model = create_tp_pipeline_stage(
+                    cfg, self.pp_size, self.pp_rank,
+                    self.tp_size, self.tp_rank, self.tp_group, device)
+        elif self.pp_size > 1:
+            # Pipeline parallelism only: each rank holds a subset of layers
             if is_t5:
                 model = create_t5_pipeline_stage(cfg, self.pp_size, self.pp_rank, device)
             else:
@@ -292,7 +306,26 @@ class MiniColossalPlugin:
             else:
                 model = GPT2Model(cfg).to(device)
 
-        # Sync parameters within DP group so replicas start identical
+        # Sync replicated parameters within TP group so TP partners share
+        # the same embeddings, LayerNorms, and lm_head weights.
+        # TP-sharded parameters (ColumnParallelLinear, RowParallelLinear) are
+        # intentionally NOT synced — each TP rank holds a different slice.
+        # This must happen BEFORE DP sync.
+        if self.tp_size > 1:
+            from minicolossal.tensor_parallel import ColumnParallelLinear, RowParallelLinear
+            tp_sharded_params = set()
+            for module in model.modules():
+                if isinstance(module, (ColumnParallelLinear, RowParallelLinear)):
+                    for p in module.parameters():
+                        tp_sharded_params.add(id(p))
+            src_coord = list(self.mesh.coord)
+            src_coord[self._tp_axis] = 0
+            src_global = self.mesh._ravel(tuple(src_coord), self.mesh.shape)
+            for param in model.parameters():
+                if id(param) not in tp_sharded_params:
+                    dist.broadcast(param.data, src=src_global, group=self.tp_group)
+
+        # Sync ALL parameters within DP group so replicas start identical
         if self.dp_size > 1:
             for param in model.parameters():
                 # Broadcast from dp_rank=0 within each DP sub-group

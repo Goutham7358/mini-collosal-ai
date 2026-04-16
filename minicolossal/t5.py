@@ -389,3 +389,109 @@ def create_t5_pipeline_stage(cfg, num_stages, stage_id, device):
 
     stage = T5PipelineStage(cfg, stage_type, is_first, is_last).to(device)
     return stage
+
+
+# ============================================================================
+# Tensor-Parallel T5 Pipeline Stage (for PP + TP combined / true 3D)
+# ============================================================================
+
+class TensorParallelT5PipelineStage(nn.Module):
+    """
+    T5 pipeline stage with tensor-parallel blocks.
+
+    Same as T5PipelineStage but uses TensorParallelT5EncoderBlock and
+    TensorParallelT5DecoderBlock. This enables true 3D parallelism where
+    each pipeline stage's layers are also sharded across TP ranks.
+    """
+    def __init__(self, cfg, stage_type, is_first, is_last,
+                 tp_size, tp_rank, tp_group):
+        super().__init__()
+        from minicolossal.tensor_parallel import (
+            TensorParallelT5EncoderBlock,
+            TensorParallelT5DecoderBlock,
+            ColumnParallelLinear,
+            RowParallelLinear,
+        )
+
+        self.cfg = cfg
+        self.stage_type = stage_type
+        self.is_first = is_first
+        self.is_last = is_last
+
+        # Both stages need embeddings (replicated across TP ranks)
+        self.tok_emb = nn.Embedding(cfg.vocab_size, cfg.hidden_dim)
+        self.pos_emb = nn.Embedding(cfg.max_seq_len, cfg.hidden_dim)
+        self.emb_dropout = nn.Dropout(cfg.dropout)
+
+        if stage_type == 'encoder':
+            self.blocks = nn.ModuleList([
+                TensorParallelT5EncoderBlock(cfg, tp_size, tp_rank, tp_group)
+                for _ in range(cfg.n_enc_layers)
+            ])
+            self.ln_f = nn.LayerNorm(cfg.hidden_dim)
+        else:  # decoder
+            self.blocks = nn.ModuleList([
+                TensorParallelT5DecoderBlock(cfg, tp_size, tp_rank, tp_group)
+                for _ in range(cfg.n_dec_layers)
+            ])
+            self.ln_f = nn.LayerNorm(cfg.hidden_dim)
+            self.lm_head = nn.Linear(cfg.hidden_dim, cfg.vocab_size, bias=False)
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        from minicolossal.tensor_parallel import ColumnParallelLinear, RowParallelLinear
+        if isinstance(module, (nn.Linear, ColumnParallelLinear, RowParallelLinear)):
+            if hasattr(module, 'weight'):
+                nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if hasattr(module, 'bias') and module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def _embed(self, ids):
+        B, T = ids.shape
+        positions = torch.arange(0, T, device=ids.device).unsqueeze(0)
+        return self.emb_dropout(self.tok_emb(ids) + self.pos_emb(positions))
+
+    def forward(self, x, input_ids=None):
+        """Same interface as T5PipelineStage.forward()."""
+        T_half = self.cfg.max_seq_len // 2
+
+        if self.stage_type == 'encoder':
+            enc_ids = input_ids[:, :T_half]
+            x = self._embed(enc_ids)
+            for block in self.blocks:
+                x = block(x)
+            x = self.ln_f(x)
+            return x
+
+        else:  # decoder
+            enc_hidden = x
+            dec_ids = input_ids[:, T_half:]
+            x = self._embed(dec_ids)
+            for block in self.blocks:
+                x = block(x, enc_hidden)
+            x = self.ln_f(x)
+            x = self.lm_head(x)
+            return x
+
+
+def create_tp_t5_pipeline_stage(cfg, num_stages, stage_id, tp_size, tp_rank,
+                                tp_group, device):
+    """
+    Create a tensor-parallel T5 pipeline stage for true 3D parallelism.
+    """
+    assert num_stages == 2, \
+        f"T5 PP only supports 2 stages (got {num_stages}). " \
+        f"Encoder=stage0, Decoder=stage1."
+
+    is_first = (stage_id == 0)
+    is_last = (stage_id == num_stages - 1)
+    stage_type = 'encoder' if stage_id == 0 else 'decoder'
+
+    stage = TensorParallelT5PipelineStage(
+        cfg, stage_type, is_first, is_last,
+        tp_size, tp_rank, tp_group
+    ).to(device)
+    return stage
