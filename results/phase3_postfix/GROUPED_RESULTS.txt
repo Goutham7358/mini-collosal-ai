@@ -1,0 +1,212 @@
+================================================================================
+  PHASE 3 — GROUPED EXPERIMENT RESULTS (Post TP+PP Bugfix)
+================================================================================
+Hardware: 2× g4dn.12xlarge (4× Tesla T4 16GB each, 8 GPUs total)
+          Intra-node: PCIe Gen3 ~15 GB/s | Inter-node: TCP ~0.6 GB/s
+Config:   dp=2, pp=2, tp=2 (true 3D hybrid parallelism) unless noted
+Date:     2026-04-11
+
+Bug fixed: plugin.py used if/elif for PP and TP, making them mutually
+exclusive. When all three were requested, only PP activated — TP groups
+carried zero traffic. 4 of 8 GPUs ran as uncoordinated duplicates.
+
+================================================================================
+GROUP 1 — THE BUG FIX PAYOFF
+================================================================================
+  "Does fixing TP actually help?"
+
+  Compares pre-fix (broken TP) vs post-fix (working TP) at identical
+  config: GPT-2 Medium, dp=2, pp=2, tp=2, good placement, bs=8.
+
+                    Pre-fix         Post-fix        Delta
+                    ──────────      ──────────      ──────────
+  Throughput        3,519 tok/s     4,851 tok/s     +37.8%
+  Peak Memory       4.07 GB/GPU     2.57 GB/GPU     -36.9%
+  Params/GPU        354M (full)     127.3M (sharded) -64.1%
+
+  Brief: The fix delivers a double win. TP shards the model across GPUs,
+  cutting per-GPU memory by 37% and freeing all 8 GPUs to do unique
+  computation. Pre-fix, 4 GPUs silently duplicated the other 4's work.
+  The throughput gain (+38%) comes from real model parallelism replacing
+  wasted duplication, and the memory savings unlock much larger batch
+  sizes (see Group 3).
+
+  Per-model throughput improvement:
+  Model          Pre-fix      Post-fix     Improvement
+  ─────────────  ──────────   ──────────   ───────────
+  GPT-2 Small    8,678        10,297       +18.7%
+  GPT-2 Medium   3,519         5,014       +42.5%
+  T5-base        5,790         5,973       +3.2%
+
+  T5 gains the least because cross-attention adds 25% more TP all-reduce
+  operations (60 vs 48 per forward pass), partially offsetting the
+  sharding benefit.
+
+
+================================================================================
+GROUP 2 — PLACEMENT STRATEGY
+================================================================================
+  "Which parallelism axis should go on the slow inter-node TCP link?"
+
+  GPT-2 Medium, dp=2, pp=2, tp=2, bs=8. Each placement puts one axis
+  on the ~0.6 GB/s TCP link and the other two on ~15 GB/s PCIe.
+
+  Placement      Inter-node axis   Throughput    vs Good    Stable at bs≥16?
+  ────────────   ───────────────   ──────────    ───────    ────────────────
+  Good           PP                4,851 tok/s   baseline   YES (up to bs=128)
+  Bad            DP                4,126 tok/s   -14.9%     NO — deadlocks
+  Worst          TP                3,776 tok/s   -22.2%     NO — deadlocks
+
+  Brief: PP is the best candidate for the slow TCP link because it only
+  sends small point-to-point activation tensors between adjacent stages.
+  DP gradient sync moves ~1.4 GB of gradients — bandwidth-heavy, punished
+  by TCP. TP does many small but frequent all-reduces that are latency-
+  sensitive — also punished by TCP. Critically, bad and worst placements
+  deadlock at batch sizes ≥16 due to NCCL contention when large activation
+  tensors compete with DP/TP traffic on the same TCP link. Good placement
+  avoids this entirely because PP's small P2P messages don't cause
+  contention. Correct placement is therefore not just a performance
+  optimization — it is essential for stability.
+
+  Pre-fix comparison (TP was dead, so "worst" showed no penalty):
+  Placement      Pre-fix      Post-fix     Observation
+  ────────────   ──────────   ──────────   ─────────────────────────
+  Good           3,519        4,851        +38% (real TP helps)
+  Bad            2,926        4,126        +41% (real TP helps)
+  Worst (TP)     3,543        3,776        +7%  (TP on TCP = overhead)
+
+  Pre-fix "worst" was 3,543 tok/s — nearly matching "good" (3,519)
+  because TP had zero traffic, so putting it inter-node cost nothing.
+  Post-fix, TP inter-node is genuinely the worst at 3,776 tok/s.
+
+
+================================================================================
+GROUP 3 — BATCH SIZE SCALING
+================================================================================
+  "TP saves memory → can we use bigger batches → how much throughput?"
+
+  GPT-2 Medium, good placement, dp=2, pp=2, tp=2.
+  Single-GPU max is bs=8 (11.1 GB, OOM at bs=16).
+  8-GPU with TP sharding enables up to bs=128.
+
+  Batch Size   Throughput     Peak Mem    Speedup vs 1-GPU max*   Regime
+  ──────────   ──────────     ────────    ─────────────────────   ──────────────
+  bs=8         4,851 tok/s    2.57 GB     3.11×                   comm-bound
+  bs=16        6,012 tok/s    2.89 GB     3.85×  (+24%)           comm-bound
+  bs=32        6,618 tok/s    3.60 GB     4.24×  (+10%)           transitioning
+  bs=64        7,245 tok/s    5.14 GB     4.64×  (+9%)            compute-bound
+  bs=128       7,387 tok/s    8.21 GB     4.73×  (+2%)            compute-bound
+  bs=256       OOM            —           —                        —
+
+  * 1-GPU max = 1,561 tok/s at bs=8 (fairest same-batch comparison)
+  * % in parentheses = throughput gain over previous batch size
+
+  Brief: TP memory savings (4.07 → 2.57 GB, -37%) enable 16× larger
+  batch sizes than a single GPU. Throughput climbs steeply from bs=8
+  to bs=32 (+36%) as larger batches amortize communication overhead —
+  the GPUs spend more time on useful computation and less time waiting
+  for gradient syncs and activation transfers. Beyond bs=64, returns
+  diminish sharply (+2% from bs=64 to bs=128) as the T4 GPUs become
+  compute-bound: communication is fully hidden, and raw FLOPS is the
+  bottleneck. The practical sweet spot is bs=32–64, balancing throughput
+  (~90% of peak) with memory headroom.
+
+
+================================================================================
+GROUP 4 — ARCHITECTURE: GPT-2 vs T5
+================================================================================
+  "Does model architecture affect hybrid parallelism scaling?"
+
+  All runs: good placement, dp=2, pp=2, tp=2.
+
+  4a. At fixed batch size (bs=8):
+  Model          Params   1-GPU      8-GPU       Speedup
+  ─────────────  ──────   ──────     ──────────  ───────
+  GPT-2 Small    117M     3,879      10,297      2.65×
+  GPT-2 Medium   354M     1,404       5,014      3.57×
+  T5-base        237M     3,359       5,973      1.78×
+
+  4b. At max batch size (bs=128, each compared to its own 1-GPU max):
+  Model          1-GPU max         8-GPU (bs=128)  Speedup
+  ─────────────  ────────────────  ──────────────  ───────
+  GPT-2 Small    4,426 (bs=16)     15,546          3.51×
+  GPT-2 Medium   1,561 (bs=8)       7,387          4.73×
+  T5-base        4,747 (bs=32)     16,555          3.49×
+
+  Brief: At bs=8, GPT-2 scales 1.5–2× better than T5 under hybrid
+  parallelism. Two architectural reasons:
+
+  1. Pipeline imbalance — T5's encoder-decoder split creates uneven
+     stages. The decoder has cross-attention, making it ~54% heavier
+     (2.75 GB vs 1.69 GB). In the 1F1B pipeline schedule, the lighter
+     encoder finishes each microbatch faster and idles waiting for the
+     decoder. GPT-2's identical blocks split into near-perfect halves
+     (2.57 vs 2.56 GB), minimizing pipeline bubbles.
+
+  2. TP communication overhead — T5's decoder blocks each require 3
+     all-reduce operations (self-attn + cross-attn + MLP) vs GPT-2's 2
+     (self-attn + MLP). Across 12 decoder layers, that is 60 all-reduces
+     per forward pass vs GPT-2 Medium's 48 — 25% more communication.
+
+  At max batch (bs=128), T5 catches up dramatically (3.49× vs 3.51× for
+  GPT-2 Small). Large batches amortize both the pipeline bubble and the
+  extra TP all-reduces, neutralizing T5's architectural disadvantages.
+  GPT-2 Medium still leads (4.73×) because its larger model size gives
+  the highest compute-to-communication ratio.
+
+
+================================================================================
+GROUP 5 — ZeRO-1 WITH TRUE 3D
+================================================================================
+  "Does ZeRO optimizer sharding compose with 3D parallelism?"
+
+  GPT-2 Medium, good placement, dp=2, pp=2, tp=2, bs=8.
+
+                    Without ZeRO    With ZeRO-1     Delta
+                    ──────────      ──────────      ──────
+  Throughput        4,851 tok/s     4,405 tok/s     -9.2%
+  Speedup vs 1-GPU  3.11×           3.14×           —
+
+  Pre-fix:          3,519           3,044           -13.5%
+
+  Brief: ZeRO-1 partitions optimizer states across the DP group (2 GPUs),
+  halving Adam's momentum + variance storage. The throughput cost is 9.2%
+  due to the extra scatter-reduce and all-gather communication for
+  optimizer state synchronization. This overhead shrank from 13.5% pre-fix
+  to 9.2% post-fix because the post-fix TP sharding reduces per-GPU
+  gradient volume, making ZeRO's communication cheaper. ZeRO-1 is most
+  valuable when training larger models where optimizer memory is the
+  bottleneck — for GPT-2 Medium on T4s, the memory is already comfortable
+  with TP alone.
+
+
+================================================================================
+SUMMARY TABLE
+================================================================================
+
+  Finding                    Key Number        Implication
+  ─────────────────────────  ────────────────  ─────────────────────────────────
+  TP bug fix payoff          +38% throughput   Real TP > duplicated GPUs
+                             -37% memory       Enables 16× larger batch sizes
+
+  Best placement (PP on TCP) +22% vs worst     PP tolerates slow links;
+                                               TP and DP need fast PCIe
+
+  Placement stability        Deadlock at bs≥16 Correct placement is not optional
+                             for bad/worst     — wrong placement breaks training
+
+  Batch scaling sweet spot   bs=32–64          ~90% of peak throughput with
+                                               memory headroom for larger models
+
+  GPT-2 vs T5 at bs=8       2.65–3.57× vs     Symmetric architectures scale
+                             1.78×             better under hybrid parallelism
+
+  T5 catches up at max bs    3.49× vs 3.51×    Large batches hide architectural
+                                               communication overhead
+
+  ZeRO-1 overhead            -9.2%             Acceptable cost; useful for
+                                               larger models hitting OOM
+
+  Theoretical ceiling        ~3.2–3.5×         Post-fix 3.11× at bs=8 (89% of
+                             (DP×PP = 4×)      ceiling); 4.73× at bs=128 exceeds
+                                               because of batch size effect

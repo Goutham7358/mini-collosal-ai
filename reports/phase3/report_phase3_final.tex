@@ -1,0 +1,347 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\graphicspath{{figures_postfix/}}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+\begin{document}
+
+\title{Mini Colossal-AI Phase~3: Communication-Aware 3D Hybrid Parallelism on Heterogeneous GPU Clusters\\}
+
+\author{\IEEEauthorblockN{Dinesh Chand}
+\IEEEauthorblockA{\textit{MTech-AI, IISc-Bangalore} \\
+dineshchand@iisc.ac.in}
+\and
+\IEEEauthorblockN{Goutham P}
+\IEEEauthorblockA{\textit{MTech-AI, IISc-Bangalore} \\
+gouthamp@iisc.ac.in}
+\and
+\IEEEauthorblockN{Meena Chidambaram}
+\IEEEauthorblockA{\textit{MTech-AI, IISc-Bangalore} \\
+meenac@iisc.ac.in}
+\and
+\IEEEauthorblockN{Nadhiya R S}
+\IEEEauthorblockA{\textit{MTech-AI, IISc-Bangalore} \\
+nadhiyar@iisc.ac.in}
+}
+
+\maketitle
+
+% ==============================================================================
+\begin{abstract}
+We present Phase~3 of \textit{Mini Colossal-AI}, extending our from-scratch distributed training library to full 3D hybrid parallelism (DP$\times$PP$\times$TP) on a heterogeneous GPU cluster. Using 2~nodes with 4~NVIDIA T4 GPUs each (PCIe intra-node at ${\sim}15$\,GB/s, TCP inter-node at ${\sim}0.6$\,GB/s), we systematically study communication-aware placement---the assignment of parallelism axes to network tiers. We find that placing pipeline parallelism on the slow inter-node link (``good'' placement) yields up to 28.5\% higher throughput compared to the worst placement, and that incorrect placement causes training deadlocks at batch sizes ${\geq}16$. Tensor parallelism memory savings ($-$37\% per GPU) enable 16$\times$ larger batch sizes, pushing throughput from 4,851 to 7,387~tok/s for GPT\nobreakdash-2 Medium. We further implement T5-base, an encoder-decoder model, and show that its asymmetric architecture causes lower hybrid scaling (1.78$\times$ at bs=8) compared to symmetric GPT\nobreakdash-2 (2.65--3.57$\times$), attributable to pipeline imbalance and higher tensor-parallel communication overhead. At large batch sizes, T5 closes this gap (3.49$\times$ vs.\ 3.51$\times$), demonstrating that batch-level amortization can compensate for architectural disadvantages.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Distributed Training, Communication-Aware Placement, 3D Hybrid Parallelism, Pipeline Parallelism, Tensor Parallelism, Encoder-Decoder
+\end{IEEEkeywords}
+
+% ==============================================================================
+\section{Introduction}
+
+Training large language models requires distributing computation across multiple GPUs, typically combining data parallelism (DP), tensor parallelism (TP), and pipeline parallelism (PP) into 3D hybrid configurations~\cite{DBLP:journals/corr/abs-1909-08053, 10.1145/3605573.3605613}. While each axis has well-understood trade-offs in isolation, their interaction on heterogeneous clusters---where intra-node and inter-node links differ by an order of magnitude in bandwidth---is less explored in educational implementations.
+
+In Phase~2 of this project, we built \textit{Mini Colossal-AI}: a from-scratch distributed training library implementing DP, TP, PP, and ZeRO optimizer sharding using only \texttt{torch.distributed} primitives, composed through a unified 3D plugin modeled after Colossal-AI~\cite{10.1145/3605573.3605613}. That phase operated on a 4-node, all-TCP cluster (1~GPU per node), limiting experiments to two parallelism axes at a time under uniformly slow communication.
+
+Phase~3 addresses three limitations. First, we move to a heterogeneous-interconnect cluster (2 nodes $\times$ 4~GPUs, PCIe intra-node, TCP inter-node) and activate all three parallelism axes simultaneously in a $(2,2,2)$ mesh. Second, we systematically study \textit{communication-aware placement}: which parallelism axis should be assigned to which network tier, and what happens when the assignment is wrong. Third, we extend our framework to support T5-base~\cite{raffel2020exploring}, an encoder-decoder architecture, to test whether our findings generalize across fundamentally different model structures.
+
+\textbf{Phase~2 context.} On the Phase~2 all-TCP cluster, PP dominated throughput because it only performs point-to-point sends, while TP and DP suffered from frequent all-reduces over the slow network. Table~\ref{tab:phase2v3} compares Phase~2 standalone and 2-axis results with Phase~3's full 3D hybrid. These results raised the natural question: on a cluster with \textit{both} fast and slow links, which axis should be placed where? Phase~3 answers this question and simultaneously activates all three axes for the first time.
+
+\begin{table}[h]
+\centering
+\caption{Phase~2 vs.\ Phase~3 --- GPT-2 Medium throughput progression}
+\label{tab:phase2v3}
+\small
+\begin{tabular}{@{}llrr@{}}
+\toprule
+\textbf{Phase} & \textbf{Config} & \textbf{GPUs} & \textbf{tok/s} \\
+\midrule
+\multicolumn{4}{@{}l}{\textit{Phase~2: 4$\times$g4dn.xlarge, all-TCP}} \\
+\addlinespace
+2 & DP (NCCL-bucketed) & 4 & 1,393 \\
+2 & TP (4-way) & 4 & 959 \\
+2 & PP (1F1B, 4 stages) & 4 & 3,070 \\
+2 & DP$\times$TP & 4 & 2,327 \\
+2 & DP$\times$PP & 4 & 2,281 \\
+\midrule
+\multicolumn{4}{@{}l}{\textit{Phase~3: 2$\times$g4dn.12xlarge, PCIe\,+\,TCP}} \\
+\addlinespace
+3 & 3D good (bs=8) & 8 & 4,851 \\
+3 & 3D good (bs=128) & 8 & 7,387 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Our contributions are: (1)~a systematic placement study showing that correct axis-to-link assignment is not merely a performance optimization but is essential for training stability; (2)~a demonstration that TP-enabled memory savings unlock 16$\times$ larger batch sizes, shifting the system from communication-bound to compute-bound operation; (3)~a multi-architecture comparison revealing how pipeline imbalance and cross-attention overhead reduce T5's hybrid scaling relative to GPT-2; and (4)~an analysis of ZeRO-1 composition with full 3D parallelism.
+
+% ==============================================================================
+\section{Related Work}
+
+\textbf{Data Parallelism.} PyTorch DDP~\cite{li2020pytorch} replicates the model on each GPU, synchronizing gradients via all-reduce after each backward pass. Ring all-reduce~\cite{patarasuk2009bandwidth} achieves bandwidth-optimal scaling, with each GPU transmitting $2(P{-}1)/P$ times the gradient size.
+
+\textbf{ZeRO Optimizer Sharding.} ZeRO~\cite{rajbhandari2019zero} partitions optimizer states (Stage~1), gradients (Stage~2), and parameters (Stage~3) across the DP group, trading communication for memory. DeepSpeed~\cite{rasley2020deepspeed} implements ZeRO stages as a drop-in optimizer wrapper.
+
+\textbf{Tensor Parallelism.} Megatron-LM~\cite{DBLP:journals/corr/abs-1909-08053} introduced 1D TP, splitting linear layers into column-parallel and row-parallel halves and inserting all-reduce operations at layer boundaries. Because TP requires two all-reduces per transformer block per forward pass, it is highly sensitive to interconnect bandwidth, motivating intra-node placement on NVLink or PCIe.
+
+\textbf{Pipeline Parallelism.} GPipe~\cite{DBLP:journals/corr/abs-1811-06965} partitions the model into sequential stages across GPUs, splitting batches into micro-batches to increase utilization. PipeDream~\cite{10.1145/3341301.3359646} introduced 1F1B scheduling, which interleaves forward and backward passes to reduce memory footprint and pipeline bubbles. PP communication is point-to-point between adjacent stages, making it the least bandwidth-sensitive axis.
+
+\textbf{3D Hybrid Parallelism.} Colossal-AI~\cite{10.1145/3605573.3605613} arranges ranks in an $N$-dimensional mesh where slower-varying axes map to slower network tiers. Megatron-LM~\cite{DBLP:journals/corr/abs-1909-08053} keeps TP within NVLink-connected nodes and PP across nodes. Our work validates these placement heuristics empirically, tests three distinct axis-to-link assignments, and additionally demonstrates the stability implications of incorrect placement.
+
+\textbf{T5 Encoder-Decoder Model.} Raffel et al.~\cite{raffel2020exploring} proposed T5, casting every NLP task as sequence-to-sequence generation. Unlike decoder-only GPT-2~\cite{radford2019language}, each T5 decoder block contains an additional cross-attention sublayer attending to the encoder output, increasing both parameter count per block and TP communication volume.
+
+% ==============================================================================
+\section{Methodology}
+
+\subsection{Hardware Setup}
+
+Phase~3 runs on 2~AWS g4dn.12xlarge instances, each with 4~NVIDIA Tesla T4 GPUs (16\,GB HBM each). Intra-node GPU communication uses PCIe Gen3 (${\sim}15$\,GB/s); inter-node communication uses TCP over VPC (${\sim}0.6$\,GB/s). This 25$\times$ bandwidth gap between intra-node and inter-node links creates the heterogeneous environment central to our placement study. All experiments use PyTorch~2.4.1 with NCCL for collective operations and Gloo for control-plane coordination.
+
+\subsection{3D Hybrid Parallelism Plugin}
+
+With 8~GPUs and $\text{dp}{=}2$, $\text{pp}{=}2$, $\text{tp}{=}2$, our unified plugin creates a $(2,2,2)$ 3D process group mesh. Each GPU belongs simultaneously to one DP group, one PP group, and one TP group. The plugin passes the correct process sub-group to each component: the DP sub-group to gradient synchronization, PP neighbor ranks to the 1F1B pipeline schedule, and the TP sub-group to column/row-parallel layers. No code changes are needed between configurations---only the mesh axis ordering changes.
+
+For pipeline stages, each stage wraps its transformer blocks in tensor-parallel versions (column-parallel and row-parallel linear layers with built-in all-reduce). Replicated parameters (embeddings, LayerNorm, \texttt{lm\_head}) are synchronized across the TP group before DP gradient synchronization to ensure consistency.
+
+\subsection{Communication-Aware Placement}
+
+The mesh axis ordering determines which parallelism axis maps to the inter-node link. The first (slowest-varying) axis spans across nodes. We test three placements:
+
+\begin{itemize}
+\item \textbf{Good}: mesh\,=\,(pp,\,dp,\,tp). PP goes inter-node; DP and TP stay intra-node.
+\item \textbf{Bad}: mesh\,=\,(dp,\,pp,\,tp). DP goes inter-node; PP and TP stay intra-node.
+\item \textbf{Worst}: mesh\,=\,(tp,\,pp,\,dp). TP goes inter-node; PP and DP stay intra-node.
+\end{itemize}
+
+The rationale: PP communicates only small point-to-point activation tensors between adjacent stages, DP synchronizes the entire gradient buffer (${\sim}1.4$\,GB for GPT-2 Medium), and TP performs many small but frequent all-reduces. We hypothesize that PP is the most tolerant of slow links, while DP and TP should reside on the fast intra-node interconnect.
+
+\subsection{Models}
+
+All models are implemented from scratch in PyTorch, using pre-norm residual connections (LayerNorm before each sub-layer) and GELU activations. Both architectures use fused QKV projections for self-attention and a feed-forward intermediate dimension of $4\times$ the hidden dimension.
+
+\textbf{GPT-2} is a decoder-only autoregressive transformer~\cite{radford2019language}. Each block consists of two sub-layers: (1)~causal multi-head self-attention with a triangular mask preventing attention to future tokens, and (2)~a position-wise feed-forward network (MLP). Token and learned positional embeddings are summed before the block stack; a final LayerNorm feeds into a language model head whose weights are tied with the token embedding matrix. We use two configurations:
+\begin{itemize}
+\item \textbf{GPT-2 Small}: 12~layers, $d{=}768$, 12~heads, ${\sim}117$M parameters. Each block contributes 2~TP all-reduces (one per sub-layer), giving 24 all-reduces per forward pass.
+\item \textbf{GPT-2 Medium}: 24~layers, $d{=}1024$, 16~heads, ${\sim}354$M parameters. The 24~identical blocks split evenly across 2~pipeline stages (12 each), producing near-perfect compute balance. 48 all-reduces per forward pass.
+\end{itemize}
+
+\textbf{T5-base} is an encoder-decoder transformer~\cite{raffel2020exploring} (${\sim}237$M parameters) with 12~encoder layers ($d{=}768$, 12~heads) and 12~decoder layers. Encoder blocks mirror the GPT-2 structure but use bidirectional self-attention (no causal mask). Decoder blocks add a third sub-layer---cross-attention---between self-attention and MLP: queries come from the decoder hidden state while keys and values come from the encoder output. This cross-attention sub-layer adds ${\sim}7$M parameters per decoder block (separate $W_Q$, fused $W_{KV}$, and $W_O$ projections). Under tensor parallelism, each decoder block requires 3~all-reduces versus GPT-2's~2, giving 60 total per forward pass (24~encoder + 36~decoder)---25\% more than GPT-2 Medium. For pipeline parallelism, the encoder maps to stage~0 and the decoder to stage~1, creating an inherent compute imbalance because decoder blocks are heavier.
+
+\subsection{Dataset}
+
+All models are trained on the WikiText-2 dataset~\cite{merity2016pointer} with a fixed sequence length of 256 tokens and a vocabulary size of 50,257 (GPT-2 tokenizer).
+
+\subsection{Evaluation Metrics}
+
+We report \textit{aggregate throughput} (tokens/second across all GPUs), \textit{peak GPU memory} per pipeline stage, and \textit{speedup} relative to the single-GPU baseline at the same or best-case batch size. All experiments run for 20--30 training steps with AdamW ($\text{lr}=3{\times}10^{-4}$); we report the average of the last 15~steps to exclude warmup.
+
+% ==============================================================================
+\section{Results and Discussion}
+
+\subsection{Single-GPU Baselines}
+
+Table~\ref{tab:baselines} shows single-GPU performance for each model at various batch sizes. These baselines serve as the reference for all speedup calculations.
+
+\begin{table}[h]
+\centering
+\caption{Single-GPU baselines (T4 16\,GB)}
+\label{tab:baselines}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Model} & \textbf{bs=4} & \textbf{bs=8} & \textbf{bs=16} & \textbf{Max bs} \\
+ & \textbf{(tok/s)} & \textbf{(tok/s)} & \textbf{(tok/s)} & \\
+\midrule
+GPT-2 Small & 3,619 & 4,147 & 4,426 & 16 \\
+GPT-2 Medium & 1,404 & 1,561 & OOM & 8 \\
+T5-base & 3,125 & 3,853 & 4,441 & 32 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+GPT-2 Medium can fit only bs=8 on a single T4 (11.1\,GB peak), while T5-base and GPT-2 Small accommodate larger batches. The T5-base single-GPU throughput at bs=32 reaches 4,747~tok/s.
+
+\subsection{Communication-Aware Placement}
+
+Fig.~\ref{fig:placement} shows the impact of placement on GPT-2 Medium throughput at bs=8 with the full $(2,2,2)$ 3D configuration. Good placement (PP inter-node) delivers 4,851~tok/s---14.9\% faster than bad placement and 28.5\% faster than worst placement. PP tolerates the slow TCP link because it sends only small point-to-point activation tensors between adjacent pipeline stages. In contrast, placing DP inter-node forces ${\sim}1.4$\,GB of gradient synchronization through the 0.6\,GB/s TCP bottleneck every step. Placing TP inter-node is the most damaging because TP performs frequent all-reduces at every transformer block boundary; TCP's high latency (${\sim}$ms round-trip) compounds across 48 operations per forward pass.
+
+\textbf{Stability impact.} Beyond throughput, placement critically affects training stability. Bad and worst placements \textit{deadlock} at batch sizes ${\geq}16$ due to NCCL peer-to-peer contention when large activation tensors compete with DP/TP traffic on the same inter-node TCP link. Good placement avoids this entirely because PP's small point-to-point messages do not cause contention. This means correct placement is not merely a performance optimization---it is \textbf{essential for reliable training at scale}.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{fig1_placement.png}
+\caption{Throughput and stability across three placement strategies. Good placement (PP inter-node) achieves the highest throughput and is the only configuration stable at bs${\geq}$16.}
+\label{fig:placement}
+\end{figure}
+
+\subsection{Batch Size Scaling}
+
+One of the key benefits of tensor parallelism is memory reduction: TP shards model parameters across the TP group, cutting per-GPU peak memory from ${\sim}11.1$\,GB (single GPU at bs=8) to 2.57\,GB (8~GPUs at bs=8). This 37\% reduction per GPU enables dramatically larger effective batch sizes. Table~\ref{tab:batch} shows how throughput scales with batch size under good placement.
+
+\begin{table}[h]
+\centering
+\caption{Batch size scaling --- GPT-2 Medium, good placement, dp=2, pp=2, tp=2}
+\label{tab:batch}
+\small
+\begin{tabular}{rrrrl}
+\toprule
+\textbf{bs} & \textbf{Throughput} & \textbf{Memory} & \textbf{Speedup} & \textbf{Regime} \\
+ & \textbf{(tok/s)} & \textbf{(GB)} & \textbf{vs.\ 1-GPU} & \\
+\midrule
+8 & 4,851 & 2.57 & 3.11$\times$ & comm-bound \\
+16 & 6,012 & 2.89 & 3.85$\times$ & comm-bound \\
+32 & 6,618 & 3.60 & 4.24$\times$ & transitioning \\
+64 & 7,245 & 5.14 & 4.64$\times$ & compute-bound \\
+128 & 7,387 & 8.21 & 4.73$\times$ & compute-bound \\
+256 & \multicolumn{3}{c}{OOM} & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Throughput increases by 52\% from bs=8 to bs=128, with the steepest gains between bs=8 and bs=32 (+36\%). At small batch sizes, the GPUs are communication-bound: they spend a significant fraction of each step waiting for gradient synchronization and pipeline activation transfers. Larger batches amortize this communication overhead by increasing the compute-per-step, shifting the bottleneck to GPU FLOPS. Beyond bs=64, returns diminish sharply (+2\% from bs=64 to bs=128), indicating the system has become compute-bound. The practical sweet spot is bs=32--64, achieving ${\sim}90$\% of peak throughput while retaining memory headroom for larger models.
+
+\subsection{Multi-Architecture Comparison}
+
+A key question is whether hybrid parallelism scaling depends on model architecture. We compare three models under identical configuration (good placement, dp=2, pp=2, tp=2) at two operating points: a fixed small batch (bs=8) and each model's maximum sustainable batch (bs=128).
+
+\subsubsection{Fixed Batch Size (bs=8)}
+
+Table~\ref{tab:arch_bs8} shows 8-GPU throughput and speedup at bs=8.
+
+\begin{table}[h]
+\centering
+\caption{Architecture comparison at bs=8 --- good placement, dp=2, pp=2, tp=2}
+\label{tab:arch_bs8}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Model} & \textbf{Params} & \textbf{1-GPU} & \textbf{8-GPU} & \textbf{Speedup} \\
+ & & \textbf{(tok/s)} & \textbf{(tok/s)} & \\
+\midrule
+GPT-2 Small & 117M & 3,879 & 10,297 & 2.65$\times$ \\
+GPT-2 Medium & 354M & 1,404 & 5,014 & 3.57$\times$ \\
+T5-base & 237M & 3,359 & 5,973 & 1.78$\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+GPT-2 achieves 2.65--3.57$\times$ hybrid speedup, while T5-base achieves only 1.78$\times$ despite being mid-sized (237M, between GPT-2 Small and Medium). Since GPT-2 Small at 117M is \textit{smaller} than T5-base yet scales 49\% better, the difference is architectural, not size-related.
+
+\subsubsection{Batch Size Sweep Across Architectures}
+
+Fig.~\ref{fig:arch_sweep} shows how all three models scale from bs=8 to their maximum batch size.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{fig4_arch_batch_sweep.png}
+\caption{Throughput vs.\ batch size for all three architectures. T5-base catches up with GPT-2 Small at large batch sizes.}
+\label{fig:arch_sweep}
+\end{figure}
+
+At bs=128, the picture changes dramatically (Table~\ref{tab:arch_max}).
+
+\begin{table}[h]
+\centering
+\caption{Architecture comparison at max batch (bs=128)}
+\label{tab:arch_max}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Model} & \textbf{1-GPU} & \textbf{8-GPU} & \textbf{Speed-} & \textbf{8-GPU} \\
+ & \textbf{max (tok/s)} & \textbf{(tok/s)} & \textbf{up} & \textbf{vs.\ bs=8} \\
+\midrule
+GPT-2 Sm. & 4,426 & 15,546 & 3.51$\times$ & +51\% \\
+GPT-2 Med. & 1,561 & 7,387 & 4.73$\times$ & +47\% \\
+T5-base & 4,747 & 16,555 & 3.49$\times$ & +177\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+T5-base's speedup improves from 1.78$\times$ (bs=8) to 3.49$\times$ (bs=128)---a 96\% improvement---while GPT-2 Small improves from 2.65$\times$ to 3.51$\times$ (32\% improvement). Large batches amortize both the pipeline bubble and the extra TP all-reduces, neutralizing T5's architectural disadvantages. GPT-2 Medium achieves the highest speedup (4.73$\times$) because its larger model size provides the best compute-to-communication ratio.
+
+\subsection{Pipeline Imbalance Analysis}
+
+The key architectural factor behind T5's lower scaling at small batch sizes is \textit{pipeline stage imbalance}. Fig.~\ref{fig:imbalance} visualizes per-stage memory for each architecture. GPT-2 Medium's identical transformer blocks split into near-perfect halves (2.57 vs.\ 2.56\,GB), producing minimal pipeline bubbles. T5-base's encoder-decoder split creates a 62.7\% imbalance: the decoder stage (2.75\,GB) is significantly heavier than the encoder stage (1.69\,GB) because each decoder block contains an additional cross-attention sublayer with ${\sim}7$M extra parameters. In the 1F1B pipeline schedule, the lighter encoder finishes each micro-batch faster and must idle waiting for the slower decoder, accumulating wasted time across all micro-batches.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\columnwidth]{fig6_pipeline_imbalance.png}
+\caption{Per-stage memory across architectures. T5-base shows 62.7\% imbalance between encoder (stage~0) and decoder (stage~1), while GPT-2 is nearly perfectly balanced.}
+\label{fig:imbalance}
+\end{figure}
+
+A secondary factor is TP communication volume. T5-base requires 60 all-reduces per forward pass (12~encoder blocks $\times$ 2 + 12~decoder blocks $\times$ 3), compared to 48 for GPT-2 Medium (24~blocks $\times$ 2). This 25\% increase in communication operations further penalizes T5 under tensor parallelism, particularly when communication is not fully hidden by computation at small batch sizes.
+
+\subsection{ZeRO-1 Composition with 3D Parallelism}
+
+Table~\ref{tab:zero} shows ZeRO Stage~1 composed with full 3D parallelism.
+
+\begin{table}[h]
+\centering
+\caption{ZeRO-1 with 3D parallelism --- GPT-2 Medium, good placement, bs=8}
+\label{tab:zero}
+\small
+\begin{tabular}{lrr}
+\toprule
+\textbf{Config} & \textbf{Without ZeRO} & \textbf{With ZeRO-1} \\
+\midrule
+Throughput (tok/s) & 4,851 & 4,405 \\
+Overhead & --- & $-$9.2\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+ZeRO-1 partitions optimizer states across the DP group (2~GPUs in our configuration), halving Adam's momentum and variance storage. The throughput cost is 9.2\% due to the additional scatter-reduce and all-gather communication for optimizer state synchronization. With TP already sharding model parameters, per-GPU gradient volume is reduced, keeping ZeRO's extra communication manageable. ZeRO-1 becomes most valuable when training larger models where optimizer memory is the binding constraint; for GPT-2 Medium on T4 GPUs, memory is already comfortable with TP alone.
+
+\subsection{Summary of Key Findings}
+
+Table~\ref{tab:summary} consolidates the main quantitative findings.
+
+\begin{table}[h]
+\centering
+\caption{Summary of Phase~3 key findings}
+\label{tab:summary}
+\small
+\begin{tabular}{@{}p{2.4cm}p{2.0cm}p{3.0cm}@{}}
+\toprule
+\textbf{Finding} & \textbf{Key metric} & \textbf{Implication} \\
+\midrule
+Good vs.\ worst placement & +28.5\% & PP tolerates slow links; TP/DP need fast PCIe \\
+\addlinespace
+Placement stability & Deadlock at bs${\geq}$16 & Correct placement essential, not optional \\
+\addlinespace
+Batch scaling & 4,851$\rightarrow$7,387 tok/s & TP memory savings enable 16$\times$ larger batches \\
+\addlinespace
+Architecture effect & 3.57$\times$ vs.\ 1.78$\times$ & Symmetric models scale better at small batches \\
+\addlinespace
+T5 catch-up & 3.49$\times$ vs.\ 3.51$\times$ & Large batches amortize arch.\ overhead \\
+\addlinespace
+ZeRO-1 overhead & $-$9.2\% & Manageable; valuable for larger models \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ==============================================================================
+\section{Conclusion and Future Work}
+
+We presented a systematic study of communication-aware 3D hybrid parallelism on a heterogeneous GPU cluster. Our key findings are threefold.
+
+First, \textit{placement matters for both performance and stability}. Assigning pipeline parallelism---the least bandwidth-sensitive axis---to the slow inter-node link yields up to 28.5\% higher throughput than the worst placement. More critically, incorrect placement causes NCCL deadlocks at batch sizes ${\geq}$16, making communication-aware assignment essential for reliable training, not merely an optimization.
+
+Second, \textit{tensor parallelism enables a memory--throughput virtuous cycle}. TP shards model parameters, reducing per-GPU memory by 37\% and enabling 16$\times$ larger batch sizes than possible on a single GPU. These larger batches amortize communication overhead, pushing throughput from 4,851 to 7,387 tok/s (4.73$\times$ single-GPU speedup) and shifting the system from communication-bound to compute-bound operation.
+
+Third, \textit{model architecture fundamentally determines hybrid parallelism efficiency}. The symmetric, decoder-only GPT-2 achieves 2.65--3.57$\times$ speedup at small batch sizes, while the asymmetric, encoder-decoder T5 achieves only 1.78$\times$ under identical hardware and configuration. This gap stems from pipeline stage imbalance (62.7\% heavier decoder) and 25\% more TP communication from cross-attention. Importantly, at maximum batch size the gap closes (3.49$\times$ vs.\ 3.51$\times$), demonstrating that batch-level amortization compensates for architectural disadvantages.
+
+\textbf{Future work.} Several directions remain. (1)~\textit{Heterogeneous stage splitting}: splitting T5's encoder and decoder into unequal numbers of pipeline stages to reduce imbalance (e.g., 8~encoder layers on stage~0, 4~encoder + 12~decoder layers split across stages~1--2). (2)~\textit{Higher TP degrees}: testing TP=4 within a node to further reduce per-GPU memory and enable even larger models. (3)~\textit{NVLink evaluation}: moving to instances with NVLink (e.g., p3.8xlarge with V100s) to measure how the placement trade-offs change when intra-node bandwidth increases from 15\,GB/s (PCIe) to 300\,GB/s (NVLink). (4)~\textit{Mixed precision training}~\cite{micikevicius2018mixed}: combining FP16 computation with our parallelism strategies to further reduce memory and communication volume. (5)~\textit{Larger models}: testing GPT-2 Large (774M) and T5-large (770M) to evaluate how findings scale beyond the 100--350M parameter range.
+
+% ==============================================================================
+\bibliographystyle{ieeetr}
+\bibliography{references}
+
+\end{document}
