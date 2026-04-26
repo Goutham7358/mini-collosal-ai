@@ -242,14 +242,15 @@ def fig3_arch_bs8():
 def fig4_arch_sweep():
     fig, ax = plt.subplots(figsize=(10, 5.5))
 
-    colors = {'GPT-2 Small': BLUE, 'GPT-2 Medium': RED, 'T5-base': YELLOW}
+    TEAL = '#00796B'
+    colors = {'GPT-2 Small': BLUE, 'GPT-2 Medium': RED, 'T5-base': TEAL}
     markers = {'GPT-2 Small': 'o', 'GPT-2 Medium': 's', 'T5-base': '^'}
     lstyles = {'GPT-2 Small': '-', 'GPT-2 Medium': '--', 'T5-base': '-.'}
 
     for model in sweep_models:
         ax.plot(range(len(sweep_bs)), sweep_models[model],
-                marker=markers[model], color=colors[model], lw=2.5, markersize=9,
-                label=model, markerfacecolor='white', markeredgewidth=2.5,
+                marker=markers[model], color=colors[model], lw=3.5, markersize=11,
+                label=model, markerfacecolor='white', markeredgewidth=3,
                 markeredgecolor=colors[model], linestyle=lstyles[model])
         ax.text(len(sweep_bs) - 1 + 0.15, sweep_models[model][-1],
                 f'{sweep_models[model][-1]:,}', fontsize=9, color=colors[model],
@@ -268,8 +269,8 @@ def fig4_arch_sweep():
     ax.annotate('T5 catches up at large batch\n(comm overhead hidden)',
                 xy=(3, sweep_models['T5-base'][-1]),
                 xytext=(1.5, 17500),
-                fontsize=9, ha='center', color=YELLOW, fontweight='bold',
-                arrowprops=dict(arrowstyle='->', color=YELLOW, lw=1.5))
+                fontsize=9, ha='center', color=TEAL, fontweight='bold',
+                arrowprops=dict(arrowstyle='->', color=TEAL, lw=1.5))
 
     plt.tight_layout()
     plt.savefig(f'{OUT}/fig4_arch_batch_sweep.png')
